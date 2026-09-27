@@ -1,0 +1,34 @@
+services:
+  agentguard-connector:
+    build: .
+    ports:
+      - "3200:3200"
+    environment:
+      CONNECTOR_PORT: 3200
+      CONNECTOR_KEY: ${CONNECTOR_KEY}
+      AGENTGUARD_URL: http://host.docker.internal:3100
+      AGENTGUARD_API_KEY: ${AGENTGUARD_API_KEY}
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.161.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    ports:
+      - "4318:4318"
+    volumes:
+      - ./otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro
+    environment:
+      CONNECTOR_KEY: ${CONNECTOR_KEY}
+    depends_on:
+      - agentguard-connector
+
+  company-gateway:
+    profiles: ["company-gateway"]
+    build: .
+    command: ["node", "company-gateway.mjs"]
+    restart: unless-stopped
+    environment:
+      AGENTGUARD_URL: http://host.docker.internal:3100
+      AGENTGUARD_COMPANY_ID: ${AGENTGUARD_COMPANY_ID}
+      AGENTGUARD_GATEWAY_CREDENTIAL: ${AGENTGUARD_GATEWAY_CREDENTIAL}
+      AGENTGUARD_CONFIG_POLL_MS: 10000
+      AGENTGUARD_HEARTBEAT_INTERVAL_MS: 20000

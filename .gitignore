@@ -1,0 +1,8 @@
+node_modules/
+.env
+connector/.env
+data.json
+data.json.*.tmp
+agentguard.sqlite
+agentguard.sqlite-shm
+agentguard.sqlite-wal

@@ -1,0 +1,30 @@
+{
+  "name": "agent-guard",
+  "version": "1.0.0",
+  "description": "AgentGuard is an AI agent control tower for mid-market teams.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test",
+    "ui": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "agents:test": "node examples/test-agents/run-both.mjs",
+    "agents:five": "node examples/test-agents/five-agent-demo.mjs",
+    "agents:prod-demo": "node examples/test-agents/production-demo.mjs"
+  },
+  "keywords": [],
+  "author": "AgentGuard",
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "dependencies": {
+    "jose": "^6.2.12",
+    "pg": "^8.23.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.1",
+    "vite": "^8.3.1"
+  }
+}
