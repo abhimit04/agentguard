@@ -67,6 +67,16 @@ test('manifest rejects truncated gzip SQL dumps missing required table data sect
   }
 });
 
+test('manifest accepts declared empty tables whose COPY sections are omitted by pg_dump', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agentguard-empty-manifest-'));
+  const backup = path.join(directory, 'empty-tables.sql.gz');
+  const schema = tableNames.map(table => `CREATE TABLE public.${table} (id text);`).join('\n');
+  fs.writeFileSync(backup, gzipSync(`${schema}\nCOPY public.ag_workspaces (id) FROM stdin;\nws\n\\.\n`));
+  const result = await createManifest(backup);
+  assert.equal(result.manifest.counts.ag_assessment_revisions, 0);
+  assert.equal(result.manifest.counts.ag_workspaces, 1);
+});
+
 test('backup manifest can be signed and verified with an externally retained public key', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agentguard-signed-manifest-'));
   const previous = { privateFile: process.env.AGENTGUARD_BACKUP_MANIFEST_SIGNING_PRIVATE_KEY_FILE, keyId: process.env.AGENTGUARD_BACKUP_MANIFEST_SIGNING_KEY_ID };

@@ -22,13 +22,15 @@ async function countDumpRows(file, requiredNames = tableNames) {
   const counts = Object.fromEntries(requiredNames.map(name => [name, 0]));
   const targets = new Set(requiredNames);
   const lines = readline.createInterface({ input: createReadStream(file).pipe(createGunzip()), crlfDelay: Infinity });
-  let current = null, found = new Set();
+  let current = null, found = new Set(), declared = new Set();
   for await (const line of lines) {
     if (current) {
       if (line === '\\.') current = null;
       else if (current.target) counts[current.target]++;
       continue;
     }
+    const create = /^CREATE TABLE (?:public\.)?"?([A-Za-z0-9_]+)"?\s*\(/.exec(line);
+    if (create && targets.has(create[1])) declared.add(create[1]);
     const match = /^COPY\s+(?:public\.)?"?([A-Za-z0-9_]+)"?\s+\(.+\)\s+FROM\s+stdin;$/.exec(line);
     if (!match) continue;
     const table = match[1];
@@ -36,7 +38,10 @@ async function countDumpRows(file, requiredNames = tableNames) {
     if (current.target) found.add(current.target);
   }
   if (current) throw new Error('Compressed SQL dump ended inside a COPY data section');
-  const missing = requiredNames.filter(name => !found.has(name));
+  // pg_dump omits COPY sections for empty tables, but still emits CREATE TABLE.
+  // Treat a declared-but-empty table as zero rows; only reject tables absent
+  // from both the schema and data sections (truncated/incomplete dumps).
+  const missing = requiredNames.filter(name => !found.has(name) && !declared.has(name));
   if (missing.length) throw new Error(`SQL dump did not include row data sections for: ${missing.join(', ')}`);
   return counts;
 }
