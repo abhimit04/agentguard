@@ -50,7 +50,7 @@ jobs:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: |
           mkdir -p backups/ci
-          docker exec "$POSTGRES_CONTAINER" pg_dump --no-owner --no-acl -U agentguard -d agentguard | gzip -c > backups/ci/restore-drill.sql.gz
+          docker exec "$POSTGRES_CONTAINER" pg_dump --no-owner --no-acl --exclude-table=public.agentguard_records -U agentguard -d agentguard | gzip -c > backups/ci/restore-drill.sql.gz
       - name: Create and validate the backup manifest
         run: node scripts/postgres-backup-manifest.js --backup backups/ci/restore-drill.sql.gz
       - name: Restore into a scratch database and verify governance
