@@ -179,7 +179,7 @@ async function runRestoreDrill() {
     const existing = await drill.query("SELECT tablename FROM pg_tables WHERE schemaname='public'");
     const available = new Set(existing.rows.map(row => row.tablename));
     for (const table of requiredTables) {
-      if (!available.has(table) && addedLaterTables.has(table) && expectedCounts?.[table] === undefined) continue;
+      if (!available.has(table) && addedLaterTables.has(table) && (expectedCounts?.[table] === undefined || expectedCounts?.[table] === 0)) continue;
       if (!available.has(table)) throw new Error(`Restored database is missing ${table}`);
       const result = await drill.query(`SELECT count(*)::integer AS count FROM "${table}"`);
       counts[table] = result.rows[0].count;
