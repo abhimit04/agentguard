@@ -85,6 +85,33 @@ async function reserveDailyBudget(client, { workspaceId, agentId, policy, input 
   return null;
 }
 
+// Read-only counterpart of reserveDailyBudget for the policy simulator. It
+// deliberately does not create a reservation: simulations must never consume
+// production capacity.
+async function previewDailyBudget({ workspaceId, agentId, policy, input }) {
+  const maxTokens = Number(policy.dailyMaxTokens || 0);
+  const maxCost = Number(policy.dailyMaxCostUsd || 0);
+  const maxActions = Number(policy.dailyMaxActions || 0);
+  if (!usePostgres || (!maxTokens && !maxCost && !maxActions)) return null;
+  const tokens = input.estimatedTokens === undefined ? 0 : Number(input.estimatedTokens);
+  const cost = input.estimatedCostUsd === undefined ? 0 : Number(input.estimatedCostUsd);
+  const invalidTokens = maxTokens && (!Number.isFinite(tokens) || tokens < 0);
+  const invalidCost = maxCost && (!Number.isFinite(cost) || cost < 0);
+  const result = await postgresQuery(`SELECT COALESCE(sum(reserved_actions),0)::int AS actions,
+    COALESCE(sum(reserved_tokens),0)::bigint AS tokens,
+    COALESCE(sum(reserved_cost_usd),0)::numeric AS cost
+    FROM ag_budget_reservations
+    WHERE workspace_id=$1 AND policy_id=$2 AND agent_id=$3 AND budget_day=current_date AND released_at IS NULL`, [workspaceId, policy.id, agentId]);
+  const used = result.rows[0] || { actions: 0, tokens: 0, cost: 0 };
+  const projected = { actions: Number(used.actions) + 1, tokens: Number(used.tokens) + (Number.isFinite(tokens) ? tokens : 0), cost: Number(used.cost) + (Number.isFinite(cost) ? cost : 0) };
+  const reason = invalidTokens ? `Token estimate is required for daily limit ${maxTokens}`
+    : invalidCost ? `Cost estimate is required for daily limit $${maxCost}`
+      : maxActions && projected.actions > maxActions ? `Daily action budget would be exceeded (${projected.actions}/${maxActions})`
+        : maxTokens && projected.tokens > maxTokens ? `Daily token budget would be exceeded (${projected.tokens}/${maxTokens})`
+          : maxCost && projected.cost > maxCost ? `Daily cost budget would be exceeded ($${projected.cost}/$${maxCost})` : null;
+  return { limits: { actions: maxActions || null, tokens: maxTokens || null, costUsd: maxCost || null }, used: { actions: Number(used.actions), tokens: Number(used.tokens), costUsd: Number(used.cost) }, projected, wouldBlock: Boolean(reason), reason };
+}
+
 // Evaluate an action and persist its agent activity, decision, approval/action
 // state, audit-chain entry, and any resulting incident in one database commit.
 async function checkGovernedAction(criteria) {
@@ -585,4 +612,4 @@ function appendEvent(item) {
 }
 function flushAudit() { return auditWriteChain; }
 
-module.exports = { listPolicies, getPolicy, findApprovalForAction, decideApproval, decideApprovalWithAudit, checkGovernedAction, expireDueApprovals, createDueAssessmentReviewAlerts, createUpcomingAssessmentReviewAlerts, listApprovals, getApproval, createApprovalWithAudit, listEvents, listAssessments, getAssessment, listAssessmentRevisions, listIncidents, upsertIncident, saveIncidentWithAudit, listAlerts, upsertAlert, acknowledgeAlertWithAudit, listAlertDeliveries, upsertAlertDelivery, enqueueAlertDelivery, enqueueMissingAlertDeliveries, claimAlertDeliveries, finishAlertDelivery, exportEvidence, upsertAssessment, saveAssessmentWithAudit, upsertPolicy, savePolicyWithAudit, upsertApproval, upsertGovernedAction, claimGovernedAction, completeGovernedAction, listUncertainGovernedActions, reconcileGovernedAction, recordGovernanceSignal, appendEvent, appendEventWithClient, flushAudit };
+module.exports = { listPolicies, getPolicy, findApprovalForAction, decideApproval, decideApprovalWithAudit, checkGovernedAction, previewDailyBudget, expireDueApprovals, createDueAssessmentReviewAlerts, createUpcomingAssessmentReviewAlerts, listApprovals, getApproval, createApprovalWithAudit, listEvents, listAssessments, getAssessment, listAssessmentRevisions, listIncidents, upsertIncident, saveIncidentWithAudit, listAlerts, upsertAlert, acknowledgeAlertWithAudit, listAlertDeliveries, upsertAlertDelivery, enqueueAlertDelivery, enqueueMissingAlertDeliveries, claimAlertDeliveries, finishAlertDelivery, exportEvidence, upsertAssessment, saveAssessmentWithAudit, upsertPolicy, savePolicyWithAudit, upsertApproval, upsertGovernedAction, claimGovernedAction, completeGovernedAction, listUncertainGovernedActions, reconcileGovernedAction, recordGovernanceSignal, appendEvent, appendEventWithClient, flushAudit };

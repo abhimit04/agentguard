@@ -72,6 +72,11 @@ approval expiry releases that action's reservation; an approved or directly
 allowed action remains counted for the day. Token and cost limits require the
 agent to send an estimate with its governed action request.
 
+The **Simulate a decision** dialog is read-only. For a policy with a daily
+budget, it displays the current reserved usage and the projected usage for the
+proposed action, including whether that action would be blocked. It never
+reserves capacity or changes an agent's runtime state.
+
 If a claim remains unresolved for five minutes, reviewers see it under
 **Uncertain executions** on the overview. Verify the downstream idempotency
 record or other authoritative evidence before choosing **Confirm completed** or
