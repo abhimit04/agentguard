@@ -284,3 +284,15 @@ CREATE TABLE IF NOT EXISTS ag_telemetry_receipts (
   PRIMARY KEY (workspace_id, company_id, agent_id, event_id),
   FOREIGN KEY (workspace_id, agent_id) REFERENCES ag_agents(workspace_id, id)
 );
+
+-- Shared fixed-window limiter for telemetry and governed-action ingestion.
+-- PostgreSQL makes the decision consistent across application instances.
+CREATE TABLE IF NOT EXISTS ag_rate_limit_buckets (
+  scope text NOT NULL,
+  identity_hash text NOT NULL,
+  window_started timestamptz NOT NULL,
+  request_count integer NOT NULL DEFAULT 0,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope, identity_hash, window_started)
+);
+CREATE INDEX IF NOT EXISTS ag_rate_limit_buckets_expiry_idx ON ag_rate_limit_buckets(window_started);
