@@ -29,7 +29,7 @@ async function countDumpRows(file, requiredNames = tableNames) {
       else if (current.target) counts[current.target]++;
       continue;
     }
-    const create = /^CREATE TABLE (?:public\.)?"?([A-Za-z0-9_]+)"?\s*\(/.exec(line);
+    const create = /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:(?:"?public"?)\.)?"?([A-Za-z0-9_]+)"?\s*\(/i.exec(line);
     if (create && targets.has(create[1])) declared.add(create[1]);
     const match = /^COPY\s+(?:public\.)?"?([A-Za-z0-9_]+)"?\s+\(.+\)\s+FROM\s+stdin;$/.exec(line);
     if (!match) continue;
