@@ -11,7 +11,7 @@ AgentGuard is an AI-agent control plane for enterprise teams. It provides a cent
 - Agent registration with generated four-digit IDs, company assignment, parent/child classification, archive/restore, and managed runtime URLs.
 - Generic gateway, SDK, sidecar, OpenTelemetry, and HTTP runtime integration paths.
 - Runtime states including registered, connected/healthy, running, idle, failed, offline, and archived.
-- Policy effects: allow, require approval, or block, with policy versions, action references, tool/resource patterns, and a no-side-effect simulator.
+- Policy effects: allow, require approval, or block, with policy versions, action references, tool/resource patterns, per-action limits, daily cumulative budgets, and a no-side-effect simulator.
 - Approval lifecycle with exact action/policy matching, reviewer identity, and configurable automatic expiry.
 - Audit logging that excludes heartbeat noise and records agent activity, policy decisions, connector events, and governance changes.
 - Tamper-evident PostgreSQL audit chain with per-workspace previous-hash links and SHA-256 event hashes.
@@ -60,6 +60,17 @@ first claim receives an execution grant; retries are suppressed. After running,
 the agent reports the outcome to `POST /api/guard/executions/complete`.
 Execution state and its audit evidence are committed together and survive a
 server restart.
+
+### Policy budgets
+
+Each policy can set optional limits for a single action (`Maximum tokens` and
+`Maximum cost`) and cumulative limits for one agent on the current UTC day
+(`Daily actions`, `Daily tokens`, and `Daily cost`). AgentGuard reserves daily
+capacity in PostgreSQL before an allow or approval-gated action progresses, so
+concurrent requests cannot overspend the same limit. A reviewer denial or an
+approval expiry releases that action's reservation; an approved or directly
+allowed action remains counted for the day. Token and cost limits require the
+agent to send an estimate with its governed action request.
 
 If a claim remains unresolved for five minutes, reviewers see it under
 **Uncertain executions** on the overview. Verify the downstream idempotency
