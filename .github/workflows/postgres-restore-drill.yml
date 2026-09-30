@@ -1,0 +1,67 @@
+name: PostgreSQL restore drill
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore-drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: agentguard
+          POSTGRES_USER: agentguard
+          POSTGRES_PASSWORD: agentguard-ci-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agentguard -d agentguard"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://agentguard:agentguard-ci-only-password@127.0.0.1:5432/agentguard
+      AGENTGUARD_STORAGE: postgres
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run backup-manifest unit tests
+        run: node --test test/backup-manifest.test.js test/deployment-config.test.js
+      - name: Seed a synthetic workspace and audit record
+        run: node scripts/seed-restore-drill-postgres.js
+      - name: Create a PostgreSQL SQL backup
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          mkdir -p backups/ci
+          docker exec "$POSTGRES_CONTAINER" pg_dump --no-owner --no-acl -U agentguard -d agentguard | gzip -c > backups/ci/restore-drill.sql.gz
+      - name: Create and validate the backup manifest
+        run: node scripts/postgres-backup-manifest.js --backup backups/ci/restore-drill.sql.gz
+      - name: Restore into a scratch database and verify governance
+        env:
+          AGENTGUARD_RESTORE_DOCKER_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          set -o pipefail
+          node scripts/restore-drill-postgres.js --backup backups/ci/restore-drill.sql.gz | tee backups/ci/restore-drill-report.json
+      - name: Retain restore evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-restore-drill-${{ github.run_id }}
+          path: backups/ci/
+          if-no-files-found: error
+          retention-days: 30
