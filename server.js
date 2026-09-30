@@ -90,18 +90,19 @@ function scoreRiskAssessment(agent, input) {
   const contributions = { autonomy, dataSensitivity: data, impact, privacy, bias, security, verifiedHumanOversight: oversight };
   return { score: Math.max(0, Math.min(100, Object.values(contributions).reduce((sum, value) => sum + value, 0))), scoringModel: 'agentguard-risk-v1', contributions };
 }
-async function limited(req) {
+async function limited(req, { scope = null, identity = null, limit = null } = {}) {
   const now = Date.now();
-  const identity = String(req.headers.authorization || req.headers['x-agentguard-api-key'] || req.headers['x-agentguard-agent'] || req.socket.remoteAddress || 'local');
+  const caller = String(identity || req.headers.authorization || req.headers['x-agentguard-api-key'] || req.headers['x-agentguard-agent'] || req.socket.remoteAddress || 'local');
   const route = req.url.split('?')[0];
-  const key = `${route}:${createHash('sha256').update(identity).digest('hex').slice(0, 16)}`;
-  const limit = Number(process.env.AGENTGUARD_RATE_LIMIT || 240);
+  const bucketScope = scope || route;
+  const key = `${bucketScope}:${createHash('sha256').update(caller).digest('hex').slice(0, 16)}`;
+  const configuredLimit = Number(limit || process.env.AGENTGUARD_RATE_LIMIT || 240);
   if (usePostgres && process.env.AGENTGUARD_SHARED_RATE_LIMIT !== 'false') {
     const result = await postgresQuery(`INSERT INTO ag_rate_limit_buckets (scope, identity_hash, window_started, request_count)
       VALUES ($1,$2,date_trunc('minute', now()),1)
       ON CONFLICT (scope, identity_hash, window_started) DO UPDATE SET request_count=ag_rate_limit_buckets.request_count+1, updated_at=now()
       RETURNING request_count`, [route, key]);
-    const rejected = result.rows[0].request_count > limit;
+    const rejected = result.rows[0].request_count > configuredLimit;
     if (rejected) rateLimitRejections++;
     return rejected;
   }
@@ -109,7 +110,7 @@ async function limited(req) {
   recent.push(now);
   rateWindow.set(key, recent);
   if (rateWindow.size > 10_000) for (const [entry, times] of rateWindow) if (!times.length || now - times.at(-1) > 60_000) rateWindow.delete(entry);
-  const rejected = recent.length > limit;
+  const rejected = recent.length > configuredLimit;
   if (rejected) rateLimitRejections++;
   return rejected;
 }
@@ -684,6 +685,9 @@ const server = http.createServer(async (req, res) => {
         const agent = await telemetryRepository.readAgent(identity, credential);
         if (['status', 'health'].includes(operation) && req.method === 'GET') return json(res, 200, { companyId: agent.companyId, agentId: agent.id, status: agent.runtimeStatus || 'offline', health: agent.status === 'healthy' ? 'healthy' : 'offline', currentTask: agent.currentTask || null, lastHeartbeat: agent.lastSeenAt, version: agent.version || null, usage: agent.usage || null });
         if (['heartbeat', 'events'].includes(operation) && req.method === 'POST') {
+          const companyLimit = Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10);
+          const agentLimit = Number(process.env.AGENTGUARD_AGENT_RATE_LIMIT || process.env.AGENTGUARD_RATE_LIMIT || 240);
+          if (await limited(req, { scope: `telemetry:company:${operation}`, identity: agent.companyId, limit: companyLimit }) || await limited(req, { scope: `telemetry:agent:${operation}`, identity: `${agent.companyId}:${agent.id}`, limit: agentLimit })) return rateLimited(res);
           const input = await body(req);
           if ((input.agentId && input.agentId !== agentId) || (input.companyId && input.companyId !== agent.companyId)) return json(res, 403, { error: 'Telemetry identity conflicts with the request path' });
           let envelope;
@@ -702,6 +706,9 @@ const server = http.createServer(async (req, res) => {
     if ((operation === 'status' || operation === 'health') && req.method === 'GET') return json(res, 200, { companyId: agent.companyId, agentId: agent.id, status: agent.runtimeStatus || 'offline', health: agent.status === 'healthy' ? 'healthy' : 'offline', currentTask: agent.currentTask || null, lastHeartbeat: agent.lastSeenAt, version: agent.version || null, usage: agent.usage || null });
     if ((operation === 'heartbeat' || operation === 'events') && req.method === 'POST') {
       try {
+        const companyLimit = Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10);
+        const agentLimit = Number(process.env.AGENTGUARD_AGENT_RATE_LIMIT || process.env.AGENTGUARD_RATE_LIMIT || 240);
+        if (await limited(req, { scope: `telemetry:company:${operation}`, identity: agent.companyId, limit: companyLimit }) || await limited(req, { scope: `telemetry:agent:${operation}`, identity: `${agent.companyId}:${agent.id}`, limit: agentLimit })) return rateLimited(res);
         const input = await body(req);
         const envelope = normalizeEnvelope({ ...input, companyId: agent.companyId, agentId: agent.id, eventType: operation === 'heartbeat' ? 'heartbeat' : input.eventType || input.event });
         const result = applyEnvelope(store, envelope, event); await agentRepository.upsert(result.agent); await governanceRepository.flushAudit(); writeStore(store);
@@ -719,6 +726,9 @@ const server = http.createServer(async (req, res) => {
       const companyId = req.headers['x-agentguard-company'] || envelopes[0].companyId;
       const agentId = req.headers['x-agentguard-agent'] || envelopes[0].agentId;
       if (envelopes.some(item => item.companyId !== companyId || item.agentId !== agentId)) return json(res, 400, { error: 'A gateway batch must contain one company and one agent identity' });
+      const companyLimit = Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10);
+      const agentLimit = Number(process.env.AGENTGUARD_AGENT_RATE_LIMIT || process.env.AGENTGUARD_RATE_LIMIT || 240);
+      if (await limited(req, { scope: 'telemetry:company:batch', identity: companyId, limit: companyLimit }) || await limited(req, { scope: 'telemetry:agent:batch', identity: `${companyId}:${agentId}`, limit: agentLimit })) return rateLimited(res);
       if (usePostgres) {
         try {
           const result = await telemetryRepository.ingest({ companyId, agentId, workspaceId: req.headers['x-agentguard-workspace'] || null }, envelopes,

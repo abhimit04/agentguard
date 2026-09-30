@@ -17,6 +17,7 @@ AgentGuard is an AI-agent control plane for enterprise teams. It provides a cent
 - Tamper-evident PostgreSQL audit chain with per-workspace previous-hash links and SHA-256 event hashes.
 - SQLite local fallback and PostgreSQL production persistence with scheduled Docker backups.
 - Coalesced PostgreSQL persistence to prevent telemetry bursts from exhausting Node.js memory.
+- Shared PostgreSQL ingestion limits with separate company and agent telemetry quotas to isolate noisy neighbours.
 - Incident management and an in-app alert center, with optional signed webhook delivery and recorded delivery outcomes.
 - Server-generated compliance evidence packages with date scoping, credential scrubbing, audit-chain anchors, and SHA-256 integrity metadata.
 
@@ -48,6 +49,17 @@ docker compose --profile production up -d --build postgres backup backup-manifes
 Caddy obtains and renews the public certificate automatically. Production startup rejects a missing/non-HTTPS public origin or a callback URL whose host/path does not match. The app sets Secure session and OAuth cookies in production; Caddy adds HSTS and standard response headers. Keep `3100` closed to external clients. The actual DNS, firewall, Google OAuth round-trip, certificate issuance/renewal, and host-specific Docker build still need to be verified in the client's staging environment; the profile is not a substitute for those deployment checks.
 
 Use `AGENTGUARD_STORAGE=sqlite` for local mode. PostgreSQL is selected when `AGENTGUARD_STORAGE=postgres` or `DATABASE_URL` is configured.
+
+### Telemetry fair-use limits
+
+AgentGuard applies a general integration limit plus independent telemetry limits
+per company and per agent. In PostgreSQL mode the limits use shared atomic
+minute buckets, so every application instance applies the same capacity rules.
+The defaults are `240` requests/minute per caller or agent and `2,400`
+requests/minute per company. Configure `AGENTGUARD_RATE_LIMIT`,
+`AGENTGUARD_AGENT_RATE_LIMIT`, and `AGENTGUARD_COMPANY_RATE_LIMIT` for the
+deployment. Rejections return HTTP `429` with `Retry-After: 60`; telemetry
+bodies and batches are also bounded before ingestion.
 
 ## PostgreSQL migration state
 
