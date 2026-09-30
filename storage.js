@@ -106,14 +106,9 @@ function writeStore(store) {
 }
 
 async function loadPostgresRecords() {
-  const presence = await pool.query("SELECT to_regclass('public.agentguard_records') AS table_name");
-  if (!presence.rows[0]?.table_name) return null;
-  const result = await pool.query('SELECT collection, payload FROM agentguard_records ORDER BY collection, record_id');
-  if (!result.rowCount) return null;
-  const store = structuredClone(seed);
-  for (const collection of collections) store[collection] = [];
-  for (const row of result.rows) if (collections.includes(row.collection)) store[row.collection].push(row.payload);
-  return normalize(store);
+  // The legacy compatibility table is no longer a runtime data source.
+  // Relational PostgreSQL repositories are authoritative after cutover.
+  return null;
 }
 
 async function loadRelationalStore() {
