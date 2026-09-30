@@ -235,8 +235,11 @@ function actionResource(input) {
 function normalizedBudget(input) {
   const maxTokens = input.maxTokens === '' || input.maxTokens === undefined ? null : Number(input.maxTokens);
   const maxCostUsd = input.maxCostUsd === '' || input.maxCostUsd === undefined ? null : Number(input.maxCostUsd);
-  if ((maxTokens !== null && (!Number.isInteger(maxTokens) || maxTokens < 1)) || (maxCostUsd !== null && (!Number.isFinite(maxCostUsd) || maxCostUsd <= 0))) throw new Error('Budget limits must be positive numbers');
-  return { maxTokens, maxCostUsd };
+  const dailyMaxTokens = input.dailyMaxTokens === '' || input.dailyMaxTokens === undefined ? null : Number(input.dailyMaxTokens);
+  const dailyMaxCostUsd = input.dailyMaxCostUsd === '' || input.dailyMaxCostUsd === undefined ? null : Number(input.dailyMaxCostUsd);
+  const dailyMaxActions = input.dailyMaxActions === '' || input.dailyMaxActions === undefined ? null : Number(input.dailyMaxActions);
+  if ([maxTokens, dailyMaxTokens, dailyMaxActions].some(value => value !== null && (!Number.isInteger(value) || value < 1)) || [maxCostUsd, dailyMaxCostUsd].some(value => value !== null && (!Number.isFinite(value) || value <= 0))) throw new Error('Budget limits must be positive numbers');
+  return { maxTokens, maxCostUsd, dailyMaxTokens, dailyMaxCostUsd, dailyMaxActions };
 }
 function exceedsBudget(policy, input) {
   if (!policy.maxTokens && !policy.maxCostUsd) return null;
@@ -1550,12 +1553,12 @@ const server = http.createServer(async (req, res) => {
       const input = await body(req);
       if (input.enabled !== undefined && typeof input.enabled !== 'boolean') return json(res, 400, { error: 'enabled must be boolean' });
       if (input.enabled !== undefined) policy.enabled = input.enabled;
-      for (const field of ['name', 'scope', 'agentId', 'actionType', 'resourcePattern', 'effect', 'priority', 'maxTokens', 'maxCostUsd']) {
+      for (const field of ['name', 'scope', 'agentId', 'actionType', 'resourcePattern', 'effect', 'priority', 'maxTokens', 'maxCostUsd', 'dailyMaxTokens', 'dailyMaxCostUsd', 'dailyMaxActions']) {
         if (input[field] === undefined) continue;
         if (field === 'effect' && !['allow', 'require_approval', 'block'].includes(input[field])) return json(res, 400, { error: 'Invalid policy effect' });
         if (field === 'priority' && !Number.isInteger(Number(input[field]))) return json(res, 400, { error: 'priority must be an integer' });
         if (field === 'agentId' && input[field] !== '*' && !store.agents.some(agent => agent.id === input[field] && inWorkspace(agent, workspaceId))) return json(res, 404, { error: 'Unknown agent' });
-        if (field === 'maxTokens' || field === 'maxCostUsd') Object.assign(policy, normalizedBudget({ [field]: input[field], [field === 'maxTokens' ? 'maxCostUsd' : 'maxTokens']: policy[field === 'maxTokens' ? 'maxCostUsd' : 'maxTokens'] }));
+        if (['maxTokens', 'maxCostUsd', 'dailyMaxTokens', 'dailyMaxCostUsd', 'dailyMaxActions'].includes(field)) Object.assign(policy, normalizedBudget({ ...policy, [field]: input[field] }));
         else policy[field] = field === 'priority' ? Number(input[field]) : input[field];
       }
       policy.version = (policy.version || 1) + 1;

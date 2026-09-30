@@ -65,6 +65,26 @@ async function writeGovernedAction(client, item) {
   return governedAction(result.rows[0]);
 }
 
+async function reserveDailyBudget(client, { workspaceId, agentId, policy, input }) {
+  const maxTokens = Number(policy.dailyMaxTokens || 0);
+  const maxCost = Number(policy.dailyMaxCostUsd || 0);
+  const maxActions = Number(policy.dailyMaxActions || 0);
+  if (!maxTokens && !maxCost && !maxActions) return null;
+  const tokens = Number(input.estimatedTokens);
+  const cost = Number(input.estimatedCostUsd);
+  if (maxTokens && (!Number.isFinite(tokens) || tokens < 0)) return `Token estimate is required for the daily limit (${maxTokens})`;
+  if (maxCost && (!Number.isFinite(cost) || cost < 0)) return `Cost estimate is required for the daily limit ($${maxCost})`;
+  const existing = await client.query(`SELECT 1 FROM ag_budget_reservations WHERE workspace_id=$1 AND policy_id=$2 AND agent_id=$3 AND action_ref=$4 AND budget_day=CURRENT_DATE AND released_at IS NULL`, [workspaceId, policy.id, agentId, input.actionRef]);
+  if (existing.rowCount) return null;
+  const used = await client.query(`SELECT COALESCE(sum(reserved_tokens),0)::bigint AS tokens, COALESCE(sum(reserved_cost_usd),0)::numeric AS cost, COALESCE(sum(reserved_actions),0)::int AS actions FROM ag_budget_reservations WHERE workspace_id=$1 AND policy_id=$2 AND agent_id=$3 AND budget_day=CURRENT_DATE AND released_at IS NULL`, [workspaceId, policy.id, agentId]);
+  const current = used.rows[0];
+  if (maxTokens && Number(current.tokens) + tokens > maxTokens) return `Daily token budget exceeded (${current.tokens} reserved + ${tokens} requested; limit ${maxTokens})`;
+  if (maxCost && Number(current.cost) + cost > maxCost) return `Daily cost budget exceeded ($${current.cost} reserved + $${cost} requested; limit $${maxCost})`;
+  if (maxActions && Number(current.actions) + 1 > maxActions) return `Daily action budget exceeded (${current.actions} reserved + 1 requested; limit ${maxActions})`;
+  await client.query(`INSERT INTO ag_budget_reservations (workspace_id,policy_id,agent_id,action_ref,reserved_tokens,reserved_cost_usd,reserved_actions) VALUES ($1,$2,$3,$4,$5,$6,1)`, [workspaceId, policy.id, agentId, input.actionRef, Number.isFinite(tokens) ? tokens : 0, Number.isFinite(cost) ? cost : 0]);
+  return null;
+}
+
 // Evaluate an action and persist its agent activity, decision, approval/action
 // state, audit-chain entry, and any resulting incident in one database commit.
 async function checkGovernedAction(criteria) {
@@ -94,7 +114,8 @@ async function checkGovernedAction(criteria) {
     const policies = policyRows.rows.map(policy);
     const matched = criteria.matchingPolicy(policies, criteria.workspaceId, criteria.agentId, input.actionType, criteria.resource);
     const explanation = matched ? null : 'No enabled policy matched; default allow applies.';
-    const budgetReason = matched ? criteria.exceedsBudget(matched, input) : null;
+    let budgetReason = matched ? criteria.exceedsBudget(matched, input) : null;
+    if (!budgetReason && matched && matched.effect !== 'block') budgetReason = await reserveDailyBudget(client, { workspaceId: criteria.workspaceId, agentId: criteria.agentId, policy: matched, input });
     if (!matched || matched.effect === 'allow') {
       const message = matched ? `Allowed by ${matched.name}: ${input.action}` : `Allowed by default: ${input.action}`;
       const audit = await appendEventWithClient(client, { ...common, kind: 'action', eventType: 'policy.allowed', actor: `agent:${criteria.agentId}`, message, action: input.action, policyId: matched?.id || null, policyVersion: matched?.version || null, estimatedTokens: input.estimatedTokens ?? null, estimatedCostUsd: input.estimatedCostUsd ?? null });
@@ -457,6 +478,7 @@ async function decideApprovalWithAudit(id, workspaceId, decision) {
     if (!saved.rows[0]) return { outcome: 'already_decided' };
     const savedApproval = approval(saved.rows[0]);
     const state = expired ? 'expired' : update.status === 'approved' ? 'approved' : 'denied';
+    if (state !== 'approved') await client.query(`UPDATE ag_budget_reservations SET released_at=$5::timestamptz WHERE workspace_id=$1 AND policy_id=$2 AND agent_id=$3 AND action_ref=$4 AND released_at IS NULL`, [workspaceId, current.policyId, current.agentId, current.actionRef, now]);
     await client.query(`UPDATE ag_governed_actions SET state=$3,updated_at=$4::timestamptz,payload=payload || $5::jsonb
       WHERE workspace_id=$1 AND approval_id=$2 AND state='awaiting_approval'`, [workspaceId, id, state, now, JSON.stringify({ state, ...(expired ? { expiredAt: now } : { decidedAt: now }) })]);
     const actionVerb = expired ? 'expired' : update.status === 'approved' ? 'approved' : 'denied';
@@ -485,6 +507,7 @@ async function expireDueApprovals(limit = 100) {
       const changed = await client.query(`UPDATE ag_approvals SET status='denied',decided_at=$3::timestamptz,payload=$4::jsonb
         WHERE workspace_id=$1 AND id=$2 AND status='pending' RETURNING workspace_id,id,agent_id,policy_id,status,action,action_ref,created_at,decided_at,payload`, [row.workspace_id, row.id, decidedAt, JSON.stringify(updated)]);
       if (!changed.rows[0]) continue;
+      await client.query(`UPDATE ag_budget_reservations SET released_at=$5::timestamptz WHERE workspace_id=$1 AND policy_id=$2 AND agent_id=$3 AND action_ref=$4 AND released_at IS NULL`, [row.workspace_id, row.policy_id, row.agent_id, row.action_ref, decidedAt]);
       await client.query(`UPDATE ag_governed_actions SET state='expired',updated_at=$3::timestamptz,payload=payload || $4::jsonb
         WHERE workspace_id=$1 AND approval_id=$2 AND state IN ('awaiting_approval','approved')`, [row.workspace_id, row.id, decidedAt, JSON.stringify({ state: 'expired', expiredAt: decidedAt })]);
       const eventId = require('node:crypto').randomUUID();

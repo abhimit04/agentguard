@@ -296,3 +296,23 @@ CREATE TABLE IF NOT EXISTS ag_rate_limit_buckets (
   PRIMARY KEY (scope, identity_hash, window_started)
 );
 CREATE INDEX IF NOT EXISTS ag_rate_limit_buckets_expiry_idx ON ag_rate_limit_buckets(window_started);
+
+-- Daily budget reservations are created inside the governed-action transaction.
+-- The locked agent row serializes reservations for one agent, preventing a
+-- concurrent pair of requests from spending the same remaining allowance.
+CREATE TABLE IF NOT EXISTS ag_budget_reservations (
+  workspace_id text NOT NULL,
+  policy_id text NOT NULL,
+  agent_id text NOT NULL,
+  action_ref text NOT NULL,
+  budget_day date NOT NULL DEFAULT CURRENT_DATE,
+  reserved_tokens bigint NOT NULL DEFAULT 0,
+  reserved_cost_usd numeric(14,4) NOT NULL DEFAULT 0,
+  reserved_actions integer NOT NULL DEFAULT 1,
+  released_at timestamptz NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (workspace_id, policy_id, agent_id, action_ref, budget_day),
+  FOREIGN KEY (workspace_id, policy_id) REFERENCES ag_policies(workspace_id, id),
+  FOREIGN KEY (workspace_id, agent_id) REFERENCES ag_agents(workspace_id, id)
+);
+CREATE INDEX IF NOT EXISTS ag_budget_reservations_daily_idx ON ag_budget_reservations(workspace_id, policy_id, agent_id, budget_day) WHERE released_at IS NULL;
