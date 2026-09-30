@@ -31,11 +31,11 @@ jobs:
       AGENTGUARD_STORAGE: postgres
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Initialize restore evidence directory
         run: mkdir -p backups/ci
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -61,7 +61,7 @@ jobs:
           node scripts/restore-drill-postgres.js --backup backups/ci/restore-drill.sql.gz | tee backups/ci/restore-drill-report.json
       - name: Retain restore evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: postgres-restore-drill-${{ github.run_id }}
           path: backups/ci/
