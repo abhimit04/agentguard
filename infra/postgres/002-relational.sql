@@ -1,4 +1,4 @@
--- AgentGuard relational persistence foundation (schema v12).
+-- AgentGuard relational persistence foundation (schema v13).
 -- IDs intentionally remain text so current four-digit agent IDs and UUID records
 -- can coexist while data is migrated from agentguard_records.
 
@@ -8,6 +8,12 @@ CREATE TABLE IF NOT EXISTS ag_workspaces (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Retention is opt-in. No cleanup runs until archive and restore proofs exist.
+ALTER TABLE ag_workspaces ADD COLUMN IF NOT EXISTS audit_retention_days integer CHECK (audit_retention_days BETWEEN 30 AND 3650);
+ALTER TABLE ag_workspaces ADD COLUMN IF NOT EXISTS retention_updated_by text;
+ALTER TABLE ag_workspaces ADD COLUMN IF NOT EXISTS retention_updated_at timestamptz;
+ALTER TABLE ag_workspaces ADD COLUMN IF NOT EXISTS retention_version integer NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS ag_memberships (
   id text PRIMARY KEY,
@@ -119,6 +125,22 @@ CREATE TABLE IF NOT EXISTS ag_assessments (
   PRIMARY KEY (workspace_id, id)
 );
 
+CREATE TABLE IF NOT EXISTS ag_assessment_revisions (
+  workspace_id text NOT NULL REFERENCES ag_workspaces(id) ON DELETE CASCADE,
+  assessment_id text NOT NULL,
+  agent_id text NOT NULL,
+  version integer NOT NULL CHECK (version > 0),
+  scoring_model text NOT NULL,
+  score integer NOT NULL CHECK (score BETWEEN 0 AND 100),
+  reviewer text NOT NULL,
+  rationale text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  payload jsonb NOT NULL,
+  PRIMARY KEY (workspace_id, assessment_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS ag_assessment_revisions_agent_idx ON ag_assessment_revisions(workspace_id, agent_id, version DESC);
+
 CREATE TABLE IF NOT EXISTS ag_incidents (
   workspace_id text NOT NULL REFERENCES ag_workspaces(id) ON DELETE CASCADE,
   id text NOT NULL,
@@ -164,6 +186,25 @@ CREATE TABLE IF NOT EXISTS ag_alert_deliveries (
   PRIMARY KEY (workspace_id, id)
 );
 
+-- Durable webhook work is separate from the append-only per-attempt delivery
+-- history above. A lease makes abandoned in-flight work recoverable after a
+-- process crash and prevents two workers from claiming the same alert at once.
+CREATE TABLE IF NOT EXISTS ag_alert_outbox (
+  workspace_id text NOT NULL,
+  alert_id text NOT NULL,
+  channel text NOT NULL CHECK (channel IN ('webhook')),
+  status text NOT NULL CHECK (status IN ('queued','in_flight','delivered','dead')),
+  attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  available_at timestamptz NOT NULL DEFAULT now(),
+  locked_until timestamptz,
+  last_error text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (workspace_id, alert_id, channel),
+  FOREIGN KEY (workspace_id, alert_id) REFERENCES ag_alerts(workspace_id, id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ag_alert_outbox_ready_idx ON ag_alert_outbox(status, available_at, locked_until);
+
 CREATE TABLE IF NOT EXISTS ag_audit_events (
   chain_sequence bigserial UNIQUE,
   workspace_id text NOT NULL REFERENCES ag_workspaces(id) ON DELETE CASCADE,
@@ -179,6 +220,22 @@ CREATE TABLE IF NOT EXISTS ag_audit_events (
   payload jsonb NOT NULL DEFAULT '{}',
   PRIMARY KEY (workspace_id, id)
 );
+
+CREATE TABLE IF NOT EXISTS ag_audit_legal_holds (
+  workspace_id text NOT NULL REFERENCES ag_workspaces(id) ON DELETE CASCADE,
+  id text NOT NULL,
+  reason text NOT NULL,
+  case_reference text,
+  created_by text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  released_by text,
+  released_at timestamptz,
+  release_reason text,
+  PRIMARY KEY (workspace_id, id),
+  CHECK ((released_at IS NULL AND released_by IS NULL AND release_reason IS NULL) OR
+         (released_at IS NOT NULL AND released_by IS NOT NULL AND release_reason IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS ag_audit_legal_holds_active_idx ON ag_audit_legal_holds(workspace_id, created_at DESC) WHERE released_at IS NULL;
 
 ALTER TABLE ag_audit_events ADD COLUMN IF NOT EXISTS chain_sequence bigserial;
 
@@ -215,3 +272,15 @@ CREATE INDEX IF NOT EXISTS ag_alerts_workspace_status_idx ON ag_alerts(workspace
 CREATE INDEX IF NOT EXISTS ag_alert_deliveries_alert_idx ON ag_alert_deliveries(workspace_id, alert_id, attempted_at DESC);
 CREATE INDEX IF NOT EXISTS ag_audit_events_workspace_created_idx ON ag_audit_events(workspace_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS ag_audit_events_chain_sequence_idx ON ag_audit_events(chain_sequence);
+
+-- Receipt and agent state commit with the audit event. Heartbeats have receipts
+-- for retry safety, but deliberately do not appear in the activity audit log.
+CREATE TABLE IF NOT EXISTS ag_telemetry_receipts (
+  workspace_id text NOT NULL,
+  company_id text NOT NULL,
+  agent_id text NOT NULL,
+  event_id text NOT NULL,
+  received_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (workspace_id, company_id, agent_id, event_id),
+  FOREIGN KEY (workspace_id, agent_id) REFERENCES ag_agents(workspace_id, id)
+);
