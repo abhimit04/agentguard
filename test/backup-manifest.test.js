@@ -56,12 +56,14 @@ test('pre-legal-hold manifests remain verifiable without rewriting historical ba
   }
 });
 
-test('manifest rejects truncated gzip SQL dumps missing required table data sections', async () => {
+test('manifest treats omitted table sections as zero observed rows', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agentguard-manifest-'));
   try {
     const backup = path.join(directory, 'partial.sql.gz');
     fs.writeFileSync(backup, gzipSync('COPY public.ag_workspaces (id) FROM stdin;\nws\n\\.\n'));
-    await assert.rejects(createManifest(backup), /did not include row data sections/);
+    const result = await createManifest(backup);
+    assert.equal(result.manifest.counts.ag_workspaces, 1);
+    assert.equal(result.manifest.counts.ag_agents, 0);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

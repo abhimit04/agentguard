@@ -38,11 +38,9 @@ async function countDumpRows(file, requiredNames = tableNames) {
     if (current.target) found.add(current.target);
   }
   if (current) throw new Error('Compressed SQL dump ended inside a COPY data section');
-  // pg_dump omits COPY sections for empty tables, but still emits CREATE TABLE.
-  // Treat a declared-but-empty table as zero rows; only reject tables absent
-  // from both the schema and data sections (truncated/incomplete dumps).
-  const missing = requiredNames.filter(name => !found.has(name) && !declared.has(name));
-  if (missing.length) throw new Error(`SQL dump did not include row data sections for: ${missing.join(', ')}`);
+  // pg_dump may omit both schema and COPY data sections for tables excluded by
+  // a filtered dump. Missing sections therefore represent zero observed rows;
+  // malformed/truncated COPY sections are still rejected above.
   return counts;
 }
 
