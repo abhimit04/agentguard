@@ -32,6 +32,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+      - name: Initialize restore evidence directory
+        run: mkdir -p backups/ci
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -63,5 +65,5 @@ jobs:
         with:
           name: postgres-restore-drill-${{ github.run_id }}
           path: backups/ci/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
