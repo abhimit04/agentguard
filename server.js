@@ -935,7 +935,7 @@ const server = http.createServer(async (req, res) => {
       const backupDirectory = path.join(__dirname, 'backups');
       const backups = fs.existsSync(backupDirectory) ? fs.readdirSync(backupDirectory).filter(name => name.endsWith('.json')).map(name => ({ name, modifiedAt: fs.statSync(path.join(backupDirectory, name)).mtime.toISOString() })).sort((a,b)=>b.modifiedAt.localeCompare(a.modifiedAt)) : [];
       const staleAgents = store.agents.filter(item => inWorkspace(item, workspaceId) && item.lastSeenAt && Date.now() - new Date(item.lastSeenAt).getTime() > Number(process.env.AGENTGUARD_HEARTBEAT_TIMEOUT_MS || 60000)).length;
-      return json(res, 200, { workspaceId, storage: usePostgres ? 'postgres' : 'sqlite', audit, execution, staleAgents, latestBackup: backups[0] || null, backupCount: backups.length, generatedAt: new Date().toISOString() });
+      return json(res, 200, { workspaceId, storage: usePostgres ? 'postgres' : 'sqlite', audit, execution, staleAgents, latestBackup: backups[0] || null, backupCount: backups.length, rateLimiting: { rejections: rateLimitRejections, mode: usePostgres && process.env.AGENTGUARD_SHARED_RATE_LIMIT !== 'false' ? 'shared-postgres' : 'local-memory', configuredPerMinute: Number(process.env.AGENTGUARD_RATE_LIMIT || 240), agentPerMinute: Number(process.env.AGENTGUARD_AGENT_RATE_LIMIT || process.env.AGENTGUARD_RATE_LIMIT || 240), companyPerMinute: Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10) }, generatedAt: new Date().toISOString() });
     } catch (error) { return json(res, 500, { error: 'Operations health unavailable', detail: error.message }); }
   }
   if (url.pathname === '/api/governance/uncertain-executions' && req.method === 'GET') {
