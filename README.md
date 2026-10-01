@@ -281,6 +281,7 @@ Routine liveness changes—heartbeat, connected/running/idle state, last-seen ti
 - Production startup fails closed when authentication, PostgreSQL, or secret configuration is unsafe.
 - Failed heartbeats override stale running state and heartbeats no longer extend task activity.
 - Agent profiles distinguish monitoring-only, telemetry-connected, and policy-enforced coverage.
+- Coverage labels distinguish recently verified controls from configured, stale, and missing evidence.
 - Dashboard governance counts use explicit policy/approval decisions, with CSV audit export.
 - Managed runtime polling rejects redirects and private-address targets unless explicitly allowlisted.
 - Policy simulation lets administrators test `tool.call` / `tool:<name>` and other action-resource combinations before deployment.

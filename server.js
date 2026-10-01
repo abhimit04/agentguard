@@ -50,6 +50,7 @@ let rateLimitRejections = 0;
 const managedPollMs = Math.max(5000, Number(process.env.AGENTGUARD_CONNECTOR_POLL_MS || 15000));
 const approvalTtlMs = Math.max(60_000, Number(process.env.AGENTGUARD_APPROVAL_TTL_MS || 15 * 60_000));
 const uncertainExecutionAfterMs = Math.max(60_000, Number(process.env.AGENTGUARD_EXECUTION_UNCERTAIN_AFTER_MS || 5 * 60_000));
+const coverageVerificationMs = Math.max(1, Math.min(720, Number(process.env.AGENTGUARD_COVERAGE_VERIFICATION_HOURS || 24))) * 60 * 60_000;
 const alertWebhookUrl = process.env.AGENTGUARD_ALERT_WEBHOOK_URL || '';
 const alertWebhookToken = process.env.AGENTGUARD_ALERT_WEBHOOK_TOKEN || '';
 const auditSigningConfigured = Boolean(process.env.AGENTGUARD_AUDIT_SIGNING_PRIVATE_KEY_FILE && process.env.AGENTGUARD_AUDIT_SIGNING_KEY_ID && fs.existsSync(path.resolve(__dirname, process.env.AGENTGUARD_AUDIT_SIGNING_PRIVATE_KEY_FILE)));
@@ -66,16 +67,22 @@ function gatewayIdentity(req, store, requestedAgentId) {
 }
 function enforcementCoverage(agent, events = [], policies = []) {
   const agentEvents = events.filter(item => item.agentId === agent.id);
-  const hasTelemetry = agentEvents.some(item => ['started', 'running', 'completed', 'tool.call', 'agent.running'].includes(item.eventType || item.event));
-  const hasPolicyCheck = agentEvents.some(item => ['policy.allowed', 'policy.blocked', 'policy.budget_blocked', 'approval.required', 'execution.claimed', 'execution.completed', 'execution.failed'].includes(item.eventType));
+  const recent = value => value && Date.now() - new Date(value).getTime() <= coverageVerificationMs;
+  const latest = predicate => agentEvents.filter(predicate).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))[0] || null;
+  const telemetryEvent = latest(item => ['started', 'running', 'completed', 'tool.call', 'agent.running'].includes(item.eventType || item.event));
+  const policyEvent = latest(item => ['policy.allowed', 'policy.blocked', 'policy.budget_blocked', 'approval.required', 'execution.claimed', 'execution.completed', 'execution.failed'].includes(item.eventType));
   const hasPolicy = policies.some(item => item.enabled !== false && (item.agentId === '*' || item.agentId === agent.id));
   const gateway = agent.connection?.mode === 'gateway' || agent.connection?.mode === 'managed-http';
+  const healthStatus = recent(agent.lastSeenAt) ? 'verified' : agent.lastSeenAt ? 'stale' : gateway ? 'configured' : 'missing';
+  const telemetryStatus = telemetryEvent && recent(telemetryEvent.createdAt) ? 'verified' : telemetryEvent || agent.telemetrySnapshot ? 'stale' : 'missing';
+  const policyStatus = policyEvent && recent(policyEvent.createdAt) ? 'verified' : policyEvent ? 'stale' : hasPolicy ? 'configured' : 'missing';
   return {
-    healthMonitoring: { status: agent.lastSeenAt ? 'verified' : gateway ? 'configured' : 'missing', evidence: agent.lastSeenAt ? 'lastSeenAt' : null },
-    executionTelemetry: { status: hasTelemetry ? 'verified' : agent.telemetrySnapshot ? 'partial' : 'missing', evidence: hasTelemetry ? 'runtime events' : agent.telemetrySnapshot ? 'telemetry snapshot' : null },
-    policyEnforcement: { status: hasPolicyCheck ? 'verified' : hasPolicy ? 'configured' : 'missing', evidence: hasPolicyCheck ? 'policy/execution events' : hasPolicy ? 'matching policy' : null },
+    healthMonitoring: { status: healthStatus, evidence: agent.lastSeenAt ? `last seen ${agent.lastSeenAt}` : null },
+    executionTelemetry: { status: telemetryStatus, evidence: telemetryEvent ? `runtime event ${telemetryEvent.createdAt}` : agent.telemetrySnapshot ? 'telemetry snapshot' : null },
+    policyEnforcement: { status: policyStatus, evidence: policyEvent ? `policy/execution event ${policyEvent.createdAt}` : hasPolicy ? 'matching policy' : null },
     remoteIntervention: { status: gateway && agent.connection?.desiredState ? 'configured' : 'missing', evidence: gateway && agent.connection?.desiredState ? 'connection control' : null },
-    summary: [hasPolicyCheck ? 'policy enforcement verified' : hasPolicy ? 'policy configured, unverified' : 'no policy evidence', hasTelemetry ? 'execution telemetry verified' : 'execution telemetry missing'].join('; ')
+    verificationWindowHours: Math.round(coverageVerificationMs / 3_600_000),
+    summary: [policyStatus === 'verified' ? 'policy enforcement recently verified' : policyStatus === 'stale' ? 'policy evidence is stale' : hasPolicy ? 'policy configured, unverified' : 'no policy evidence', telemetryStatus === 'verified' ? 'execution telemetry recently verified' : telemetryStatus === 'stale' ? 'execution telemetry is stale' : 'execution telemetry missing'].join('; ')
   };
 }
 function scoreRiskAssessment(agent, input) {
