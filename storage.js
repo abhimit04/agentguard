@@ -148,40 +148,50 @@ function assertPostgresBootstrapIsExplicit({ relationalStore, compatibilityStore
 
 async function initializeStore() {
   if (!usePostgres) { cachedStore = readStore(); return; }
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS agentguard_metadata (
-      id integer PRIMARY KEY CHECK (id = 1),
-      schema_version integer NOT NULL,
-      updated_at timestamptz NOT NULL DEFAULT now()
-    );
-  `);
-  if (fs.existsSync(relationalSchemaFile)) await pool.query(fs.readFileSync(relationalSchemaFile, 'utf8'));
-  await pool.query('ALTER TABLE ag_audit_events ADD COLUMN IF NOT EXISTS previous_hash text; ALTER TABLE ag_audit_events ADD COLUMN IF NOT EXISTS event_hash text;');
-  cachedStore = await loadRelationalStore();
-  if (cachedStore) return;
+  // All application instances must serialize first-time schema/bootstrap work.
+  // CREATE TABLE IF NOT EXISTS is not enough on its own: PostgreSQL can still
+  // race while creating the underlying catalog type for a new table.
+  const initClient = await pool.connect();
+  await initClient.query("SELECT pg_advisory_lock(hashtext('agentguard-schema-bootstrap-v1'))");
+  try {
+    await initClient.query(`
+      CREATE TABLE IF NOT EXISTS agentguard_metadata (
+        id integer PRIMARY KEY CHECK (id = 1),
+        schema_version integer NOT NULL,
+        updated_at timestamptz NOT NULL DEFAULT now()
+      );
+    `);
+    if (fs.existsSync(relationalSchemaFile)) await initClient.query(fs.readFileSync(relationalSchemaFile, 'utf8'));
+    await initClient.query('ALTER TABLE ag_audit_events ADD COLUMN IF NOT EXISTS previous_hash text; ALTER TABLE ag_audit_events ADD COLUMN IF NOT EXISTS event_hash text;');
+    cachedStore = await loadRelationalStore();
+    if (cachedStore) return;
 
-  // A legacy record-store snapshot cannot safely become the runtime cache:
-  // the old bootstrap writer projected only some collections into relations.
-  // Require the explicit, complete migration instead of silently starting with
-  // incomplete relational data. Production writes no longer update this table.
-  const compatibilityStore = await loadPostgresRecords();
-  assertPostgresBootstrapIsExplicit({ relationalStore: cachedStore, compatibilityStore });
+    // A legacy record-store snapshot cannot safely become the runtime cache:
+    // the old bootstrap writer projected only some collections into relations.
+    // Require the explicit, complete migration instead of silently starting with
+    // incomplete relational data. Production writes no longer update this table.
+    const compatibilityStore = await loadPostgresRecords();
+    assertPostgresBootstrapIsExplicit({ relationalStore: cachedStore, compatibilityStore });
 
-  const legacy = await pool.query(`SELECT to_regclass('public.agentguard_store') AS table_name`);
-  let postgresStore = null;
-  if (legacy.rows[0]?.table_name) {
-    const result = await pool.query('SELECT payload FROM agentguard_store WHERE id = 1');
-    if (result.rows[0]) postgresStore = normalize(result.rows[0].payload);
+    const legacy = await pool.query(`SELECT to_regclass('public.agentguard_store') AS table_name`);
+    let postgresStore = null;
+    if (legacy.rows[0]?.table_name) {
+      const result = await pool.query('SELECT payload FROM agentguard_store WHERE id = 1');
+      if (result.rows[0]) postgresStore = normalize(result.rows[0].payload);
+    }
+    const localStores = readLocalStoreForMigrationCheck();
+    assertPostgresBootstrapIsExplicit({ relationalStore: cachedStore, compatibilityStore, postgresStore, localStores });
+    const fresh = normalize(structuredClone(seed));
+    await postgresTransaction(async client => {
+      await client.query('INSERT INTO ag_workspaces (id,name,created_at,updated_at) VALUES ($1,$2,now(),now()) ON CONFLICT (id) DO NOTHING', [fresh.workspaces[0].id, fresh.workspaces[0].name]);
+      await client.query('INSERT INTO ag_companies (workspace_id,id,name,created_at,updated_at,payload) VALUES ($1,$2,$3,now(),now(),$4::jsonb) ON CONFLICT (workspace_id,id) DO NOTHING', ['default','default','Default workspace',JSON.stringify(fresh.companies[0])]);
+      await client.query('INSERT INTO agentguard_metadata (id,schema_version,updated_at) VALUES (1,$1,now()) ON CONFLICT (id) DO UPDATE SET schema_version=EXCLUDED.schema_version,updated_at=now()', [schemaVersion]);
+    });
+    cachedStore = await loadRelationalStore();
+  } finally {
+    await initClient.query("SELECT pg_advisory_unlock(hashtext('agentguard-schema-bootstrap-v1'))").catch(() => {});
+    initClient.release();
   }
-  const localStores = readLocalStoreForMigrationCheck();
-  assertPostgresBootstrapIsExplicit({ relationalStore: cachedStore, compatibilityStore, postgresStore, localStores });
-  const fresh = normalize(structuredClone(seed));
-  await postgresTransaction(async client => {
-    await client.query('INSERT INTO ag_workspaces (id,name,created_at,updated_at) VALUES ($1,$2,now(),now()) ON CONFLICT (id) DO NOTHING', [fresh.workspaces[0].id, fresh.workspaces[0].name]);
-    await client.query('INSERT INTO ag_companies (workspace_id,id,name,created_at,updated_at,payload) VALUES ($1,$2,$3,now(),now(),$4::jsonb) ON CONFLICT (workspace_id,id) DO NOTHING', ['default','default','Default workspace',JSON.stringify(fresh.companies[0])]);
-    await client.query('INSERT INTO agentguard_metadata (id,schema_version,updated_at) VALUES (1,$1,now()) ON CONFLICT (id) DO UPDATE SET schema_version=EXCLUDED.schema_version,updated_at=now()', [schemaVersion]);
-  });
-  cachedStore = await loadRelationalStore();
 }
 
 async function flushStore() {}

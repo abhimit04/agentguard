@@ -27,6 +27,8 @@ Progress (2026-09-30, backup provenance): SQL backup manifests can now carry an 
 
 Progress (2026-10-01, ingestion safety): Gateway and integration request bodies are bounded by `AGENTGUARD_MAX_BODY_BYTES` and telemetry batches remain capped at 500 envelopes. PostgreSQL deployments now use an atomic, shared fixed-window limiter keyed by route and a hashed caller identity; rejected callers receive `Retry-After: 60`. Local development retains the bounded in-memory fallback. Tenant/company/agent-aware quotas and multi-instance noisy-neighbour tests remain required.
 
+Progress (2026-10-01, multi-instance limiter proof): Telemetry limits now apply separately at workspace, company, and agent scopes; a batch is charged for every envelope rather than as a single request. `scripts/test-rate-limit-multi-instance-postgres.js` launches two AgentGuard processes against one scratch database, proves a single agent cannot evade its shared cap by switching instances, and verifies a second company retains its capacity. The GitHub restore workflow runs this check. Broader sustained-overload, queue-depth, and proxy-address tests remain open.
+
 ## Delivery objective
 
 Prove one complete governed execution: an authenticated agent requests an action, policy evaluation requires approval, execution waits, an authorized reviewer approves, only the bound action receives an execution grant, and its outcome is durably audited. Demonstrate denial, expiry, duplicate delivery, database failure, and recovery after a real process restart.

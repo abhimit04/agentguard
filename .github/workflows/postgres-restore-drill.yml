@@ -43,6 +43,8 @@ jobs:
         run: npm ci
       - name: Run backup-manifest unit tests
         run: node --test test/backup-manifest.test.js test/deployment-config.test.js
+      - name: Verify shared telemetry limits across two app instances
+        run: node scripts/test-rate-limit-multi-instance-postgres.js
       - name: Seed a synthetic workspace and audit record
         run: node scripts/seed-restore-drill-postgres.js
       - name: Create a PostgreSQL SQL backup

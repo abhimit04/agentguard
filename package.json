@@ -21,6 +21,7 @@
     "test:audit-export-postgres": "node --env-file=.env scripts/test-audit-export-postgres.js",
     "test:legal-holds-postgres": "node --env-file=.env scripts/test-legal-holds-postgres.js",
     "test:telemetry-postgres": "node --env-file=.env scripts/test-telemetry-postgres.js",
+    "test:rate-limit-postgres": "node --env-file=.env scripts/test-rate-limit-multi-instance-postgres.js",
     "verify:audit": "node --env-file=.env scripts/verify-audit-chain.js",
     "verify:audit-export": "node scripts/verify-audit-export.js",
     "archive:audit-export": "node scripts/archive-audit-export.js",

@@ -70,6 +70,12 @@ bypass an individual agent's cap. Expired PostgreSQL buckets are pruned.
 Rejections return HTTP `429` with `Retry-After: 60`; telemetry bodies and
 batches are also bounded before ingestion.
 
+Run `npm run test:rate-limit-postgres` to create a scratch database and start
+two AgentGuard processes against it. The test proves that a single agent cannot
+evade its quota by sending traffic to different application instances, while a
+separate company retains its own quota. It removes the scratch database when
+finished.
+
 ## PostgreSQL migration state
 
 ### Durable governed execution
