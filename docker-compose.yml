@@ -8,6 +8,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     volumes:
       - agentguard-postgres:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
@@ -27,5 +32,77 @@ services:
       BACKUP_KEEP_MONTHS: 6
     volumes:
       - ./backups:/backups
+  backup-manifest:
+    image: node:22-alpine
+    restart: unless-stopped
+    depends_on:
+      - backup
+    network_mode: none
+    working_dir: /app
+    command: ["node", "scripts/watch-backup-manifests.js"]
+    environment:
+      BACKUP_ROOT: /backups
+      BACKUP_MANIFEST_STABLE_MS: 90000
+      BACKUP_MANIFEST_INTERVAL_MS: 60000
+    volumes:
+      - ./backups:/backups
+      - ./scripts:/app/scripts:ro
+  app:
+    profiles: ["production"]
+    build: .
+    restart: unless-stopped
+    env_file:
+      - ${AGENTGUARD_ENV_FILE:-.env}
+    environment:
+      NODE_ENV: production
+      PORT: 3100
+      AGENTGUARD_STORAGE: postgres
+      AGENTGUARD_PUBLIC_ORIGIN: https://${AGENTGUARD_HOST:?Set AGENTGUARD_HOST in .env}
+      DATABASE_URL: ""
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-agentguard}
+      PGUSER: ${POSTGRES_USER:-agentguard}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    expose:
+      - "3100"
+    networks:
+      - default
+      - proxy
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./secrets:/app/secrets:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 4s
+      retries: 5
+      start_period: 20s
+  caddy:
+    profiles: ["production"]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      AGENTGUARD_HOST: ${AGENTGUARD_HOST:?Set AGENTGUARD_HOST in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    networks:
+      - proxy
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - agentguard-caddy-data:/data
+      - agentguard-caddy-config:/config
 volumes:
   agentguard-postgres:
+  agentguard-caddy-data:
+  agentguard-caddy-config:
+networks:
+  proxy:
+    driver: bridge
