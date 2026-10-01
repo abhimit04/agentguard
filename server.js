@@ -50,6 +50,11 @@ let rateLimitRejections = 0;
 let lastRateLimitPruneAt = 0;
 let localTelemetryInflight = 0;
 let telemetryOverloadRejections = 0;
+let telemetryCommitCount = 0;
+let telemetryCommitFailures = 0;
+let telemetryLatencyTotalMs = 0;
+let telemetryLatencyMaxMs = 0;
+let telemetryLastCommitAt = null;
 const managedPollMs = Math.max(5000, Number(process.env.AGENTGUARD_CONNECTOR_POLL_MS || 15000));
 const approvalTtlMs = Math.max(60_000, Number(process.env.AGENTGUARD_APPROVAL_TTL_MS || 15 * 60_000));
 const uncertainExecutionAfterMs = Math.max(60_000, Number(process.env.AGENTGUARD_EXECUTION_UNCERTAIN_AFTER_MS || 5 * 60_000));
@@ -164,6 +169,21 @@ async function acquireTelemetrySlot() {
   });
   if (!acquired) return null;
   return async () => { await postgresQuery('DELETE FROM ag_telemetry_leases WHERE id=$1', [leaseId]).catch(() => {}); };
+}
+async function runTelemetryWork(work) {
+  const release = await acquireTelemetrySlot();
+  if (!release) return null;
+  const startedAt = Date.now();
+  try { return await work(); }
+  catch (error) { telemetryCommitFailures++; throw error; }
+  finally {
+    const elapsedMs = Date.now() - startedAt;
+    telemetryCommitCount++;
+    telemetryLatencyTotalMs += elapsedMs;
+    telemetryLatencyMaxMs = Math.max(telemetryLatencyMaxMs, elapsedMs);
+    telemetryLastCommitAt = new Date().toISOString();
+    await release();
+  }
 }
 function createAuditEvent(store, kind, message, metadata = {}) {
   const relatedAgent = metadata.agentId ? store.agents.find(item => item.id === metadata.agentId) : null;
@@ -753,13 +773,10 @@ const server = http.createServer(async (req, res) => {
           let envelope;
           try { envelope = normalizeEnvelope({ ...input, companyId: agent.companyId, agentId, eventType: operation === 'heartbeat' ? 'heartbeat' : input.eventType || input.event }); }
           catch (error) { return json(res, 400, { error: error.message }); }
-          const release = await acquireTelemetrySlot();
-          if (!release) return telemetryOverloaded(res);
-          try {
-            const result = await telemetryRepository.ingest(identity, [envelope], credential);
-            publishTelemetry(result);
-            return json(res, 202, { accepted: result.accepted, duplicate: Boolean(result.duplicates), status: result.agent.runtimeStatus });
-          } finally { await release(); }
+          const result = await runTelemetryWork(() => telemetryRepository.ingest(identity, [envelope], credential));
+          if (!result) return telemetryOverloaded(res);
+          publishTelemetry(result);
+          return json(res, 202, { accepted: result.accepted, duplicate: Boolean(result.duplicates), status: result.agent.runtimeStatus });
         }
         return json(res, 405, { error: 'Method not allowed' });
       } catch (error) { return telemetryError(res, error); }
@@ -799,14 +816,11 @@ const server = http.createServer(async (req, res) => {
       if (await limited(req, { scope: 'telemetry:workspace:batch', identity: workspaceId, limit: workspaceLimit, weight: eventWeight }) || await limited(req, { scope: 'telemetry:company:batch', identity: companyId, limit: companyLimit, weight: eventWeight }) || await limited(req, { scope: 'telemetry:agent:batch', identity: `${companyId}:${agentId}`, limit: agentLimit, weight: eventWeight })) return rateLimited(res);
       if (usePostgres) {
         try {
-          const release = await acquireTelemetrySlot();
-          if (!release) return telemetryOverloaded(res);
-          try {
-            const result = await telemetryRepository.ingest({ companyId, agentId, workspaceId: req.headers['x-agentguard-workspace'] || null }, envelopes,
-              { token: String(req.headers.authorization || '').replace(/^Bearer\s+/i, ''), company: true, integration: authorizedIntegration(req) });
-            publishTelemetry(result);
-            return json(res, 202, { accepted: result.accepted, duplicates: result.duplicates, agentId, companyId });
-          } finally { await release(); }
+          const result = await runTelemetryWork(() => telemetryRepository.ingest({ companyId, agentId, workspaceId: req.headers['x-agentguard-workspace'] || null }, envelopes,
+            { token: String(req.headers.authorization || '').replace(/^Bearer\s+/i, ''), company: true, integration: authorizedIntegration(req) }));
+          if (!result) return telemetryOverloaded(res);
+          publishTelemetry(result);
+          return json(res, 202, { accepted: result.accepted, duplicates: result.duplicates, agentId, companyId });
         } catch (error) { return telemetryError(res, error); }
       }
       const store = readStore();
@@ -1001,7 +1015,7 @@ const server = http.createServer(async (req, res) => {
       const backups = fs.existsSync(backupDirectory) ? fs.readdirSync(backupDirectory).filter(name => name.endsWith('.json')).map(name => ({ name, modifiedAt: fs.statSync(path.join(backupDirectory, name)).mtime.toISOString() })).sort((a,b)=>b.modifiedAt.localeCompare(a.modifiedAt)) : [];
       const staleAgents = store.agents.filter(item => inWorkspace(item, workspaceId) && item.lastSeenAt && Date.now() - new Date(item.lastSeenAt).getTime() > Number(process.env.AGENTGUARD_HEARTBEAT_TIMEOUT_MS || 60000)).length;
       const inFlight = usePostgres ? await require('./storage').postgresQuery('SELECT count(*)::int AS active FROM ag_telemetry_leases WHERE expires_at > now()').then(result => result.rows[0].active) : localTelemetryInflight;
-      return json(res, 200, { workspaceId, storage: usePostgres ? 'postgres' : 'sqlite', audit, execution, staleAgents, latestBackup: backups[0] || null, backupCount: backups.length, rateLimiting: { rejections: rateLimitRejections, mode: usePostgres && process.env.AGENTGUARD_SHARED_RATE_LIMIT !== 'false' ? 'shared-postgres' : 'local-memory', configuredPerMinute: Number(process.env.AGENTGUARD_RATE_LIMIT || 240), agentPerMinute: Number(process.env.AGENTGUARD_AGENT_RATE_LIMIT || process.env.AGENTGUARD_RATE_LIMIT || 240), companyPerMinute: Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10), workspacePerMinute: boundedRateLimit(process.env.AGENTGUARD_WORKSPACE_RATE_LIMIT, Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10) * 10), batchAccounting: 'each telemetry envelope consumes capacity', inFlight: Number(inFlight || 0), inFlightLimit: boundedRateLimit(process.env.AGENTGUARD_MAX_INFLIGHT_TELEMETRY, 50), overloadRejections: telemetryOverloadRejections }, generatedAt: new Date().toISOString() });
+      return json(res, 200, { workspaceId, storage: usePostgres ? 'postgres' : 'sqlite', audit, execution, staleAgents, latestBackup: backups[0] || null, backupCount: backups.length, rateLimiting: { rejections: rateLimitRejections, mode: usePostgres && process.env.AGENTGUARD_SHARED_RATE_LIMIT !== 'false' ? 'shared-postgres' : 'local-memory', configuredPerMinute: Number(process.env.AGENTGUARD_RATE_LIMIT || 240), agentPerMinute: Number(process.env.AGENTGUARD_AGENT_RATE_LIMIT || process.env.AGENTGUARD_RATE_LIMIT || 240), companyPerMinute: Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10), workspacePerMinute: boundedRateLimit(process.env.AGENTGUARD_WORKSPACE_RATE_LIMIT, Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10) * 10), batchAccounting: 'each telemetry envelope consumes capacity', inFlight: Number(inFlight || 0), inFlightLimit: boundedRateLimit(process.env.AGENTGUARD_MAX_INFLIGHT_TELEMETRY, 50), overloadRejections: telemetryOverloadRejections, committed: telemetryCommitCount, commitFailures: telemetryCommitFailures, averageCommitMs: telemetryCommitCount ? Math.round(telemetryLatencyTotalMs / telemetryCommitCount) : 0, maxCommitMs: telemetryLatencyMaxMs, lastCommitAt: telemetryLastCommitAt }, generatedAt: new Date().toISOString() });
     } catch (error) { return json(res, 500, { error: 'Operations health unavailable', detail: error.message }); }
   }
   if (url.pathname === '/api/governance/uncertain-executions' && req.method === 'GET') {
@@ -1589,13 +1603,10 @@ const server = http.createServer(async (req, res) => {
           const envelope = normalizeEnvelope({ ...input, eventType, message, companyId: agent.companyId,
             task: input.task || (input.taskId ? { id: input.taskId, name: message } : null),
             metadata: { ...(input.metadata || {}), resource: input.resource || null, durationMs: input.durationMs || null } });
-          const release = await acquireTelemetrySlot();
-          if (!release) return telemetryOverloaded(res);
-          try {
-            const result = await telemetryRepository.ingest({ ...identity, workspaceId: agent.workspaceId, companyId: agent.companyId }, [envelope], credential);
-            publishTelemetry(result);
-            return json(res, 201, { ok: true, duplicate: Boolean(result.duplicates) });
-          } finally { await release(); }
+          const result = await runTelemetryWork(() => telemetryRepository.ingest({ ...identity, workspaceId: agent.workspaceId, companyId: agent.companyId }, [envelope], credential));
+          if (!result) return telemetryOverloaded(res);
+          publishTelemetry(result);
+          return json(res, 201, { ok: true, duplicate: Boolean(result.duplicates) });
         } catch (error) { return telemetryError(res, error); }
       }
       const store = readStore();

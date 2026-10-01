@@ -33,6 +33,9 @@ test('operations health exposes telemetry admission capacity', async () => {
   assert.equal(health.rateLimiting.inFlight, 0);
   assert.equal(health.rateLimiting.inFlightLimit, 50);
   assert.equal(health.rateLimiting.overloadRejections, 0);
+  assert.equal(health.rateLimiting.committed, 0);
+  assert.equal(health.rateLimiting.commitFailures, 0);
+  assert.equal(health.rateLimiting.averageCommitMs, 0);
 });
 
 test('oversized JSON is rejected before policy processing', async () => {

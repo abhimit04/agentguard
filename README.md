@@ -83,7 +83,8 @@ configured lease duration. When full, AgentGuard responds with `503` and
 `Retry-After: 1`; callers should retry the identical event ID.
 
 System Health exposes active telemetry leases, the configured in-flight limit,
-and overload rejections so operators can see admission pressure.
+overload rejections, commit latency, and commit failures so operators can see
+admission pressure and database-ingestion health.
 
 Every JSON request is measured as bytes while streaming. Protected gateway and
 policy endpoints reject requests above `AGENTGUARD_MAX_BODY_BYTES` with `413`
