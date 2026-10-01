@@ -11,7 +11,7 @@ const { issueToken } = require('../gateway');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { listBackupArtifacts } = require('../server');
+const { listBackupArtifacts, backupHealth } = require('../server');
 
 let baseUrl;
 test.before(async () => {
@@ -52,6 +52,13 @@ test('backup discovery includes scheduled PostgreSQL dumps in nested folders', (
     const backups = listBackupArtifacts(root);
     assert.deepEqual(backups.map(item => [item.name, item.format]).sort(), [['daily/agentguard.sql.gz', 'postgres-sql-gzip'], ['legacy.json', 'json-snapshot']]);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('backup health distinguishes fresh, overdue, and missing backups', () => {
+  const now = Date.parse('2026-10-01T12:00:00.000Z');
+  assert.equal(backupHealth(null, 26, now).status, 'missing');
+  assert.equal(backupHealth({ modifiedAt: '2026-10-01T02:00:00.000Z', format: 'postgres-sql-gzip' }, 26, now).status, 'healthy');
+  assert.equal(backupHealth({ modifiedAt: '2026-09-29T12:00:00.000Z', format: 'postgres-sql-gzip' }, 26, now).status, 'overdue');
 });
 
 test('oversized JSON is rejected before policy processing', async () => {

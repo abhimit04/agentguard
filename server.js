@@ -89,6 +89,12 @@ function listBackupArtifacts(rootDirectory) {
   scan(rootDirectory);
   return artifacts.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
 }
+function backupHealth(latestBackup, maxAgeHours = Number(process.env.AGENTGUARD_BACKUP_MAX_AGE_HOURS || 26), now = Date.now()) {
+  const allowedAgeMs = Math.max(1, Number(maxAgeHours) || 26) * 60 * 60_000;
+  if (!latestBackup) return { status: 'missing', ageHours: null, maximumAgeHours: Math.round(allowedAgeMs / 3_600_000) };
+  const ageMs = Math.max(0, now - new Date(latestBackup.modifiedAt).getTime());
+  return { status: ageMs > allowedAgeMs ? 'overdue' : 'healthy', ageHours: Math.round(ageMs / 3_600_000 * 10) / 10, maximumAgeHours: Math.round(allowedAgeMs / 3_600_000), format: latestBackup.format };
+}
 function authorizedIntegration(req) { return Boolean(integrationApiKey) && (req.headers.authorization === `Bearer ${integrationApiKey}` || req.headers['x-agentguard-api-key'] === integrationApiKey); }
 function gatewayIdentity(req, store, requestedAgentId) {
   const companyId = String(req.headers['x-agentguard-company'] || '');
@@ -1029,9 +1035,11 @@ const server = http.createServer(async (req, res) => {
         for (const item of executionRows.rows) { const key = item.state === 'awaiting_approval' ? 'awaitingApproval' : item.state; if (key in execution) execution[key] = item.count; }
       }
       const backups = listBackupArtifacts(path.join(__dirname, 'backups'));
+      const currentBackup = backups[0] || null;
+      const backupStatus = backupHealth(currentBackup);
       const staleAgents = store.agents.filter(item => inWorkspace(item, workspaceId) && item.lastSeenAt && Date.now() - new Date(item.lastSeenAt).getTime() > Number(process.env.AGENTGUARD_HEARTBEAT_TIMEOUT_MS || 60000)).length;
       const inFlight = usePostgres ? await require('./storage').postgresQuery('SELECT count(*)::int AS active FROM ag_telemetry_leases WHERE expires_at > now()').then(result => result.rows[0].active) : localTelemetryInflight;
-      return json(res, 200, { workspaceId, storage: usePostgres ? 'postgres' : 'sqlite', audit, execution, staleAgents, latestBackup: backups[0] || null, backupCount: backups.length, rateLimiting: { rejections: rateLimitRejections, mode: usePostgres && process.env.AGENTGUARD_SHARED_RATE_LIMIT !== 'false' ? 'shared-postgres' : 'local-memory', configuredPerMinute: Number(process.env.AGENTGUARD_RATE_LIMIT || 240), agentPerMinute: Number(process.env.AGENTGUARD_AGENT_RATE_LIMIT || process.env.AGENTGUARD_RATE_LIMIT || 240), companyPerMinute: Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10), workspacePerMinute: boundedRateLimit(process.env.AGENTGUARD_WORKSPACE_RATE_LIMIT, Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10) * 10), batchAccounting: 'each telemetry envelope consumes capacity', inFlight: Number(inFlight || 0), inFlightLimit: boundedRateLimit(process.env.AGENTGUARD_MAX_INFLIGHT_TELEMETRY, 50), overloadRejections: telemetryOverloadRejections, committed: telemetryCommitCount, commitFailures: telemetryCommitFailures, averageCommitMs: telemetryCommitCount ? Math.round(telemetryLatencyTotalMs / telemetryCommitCount) : 0, maxCommitMs: telemetryLatencyMaxMs, lastCommitAt: telemetryLastCommitAt }, generatedAt: new Date().toISOString() });
+      return json(res, 200, { workspaceId, storage: usePostgres ? 'postgres' : 'sqlite', audit, execution, staleAgents, latestBackup: currentBackup, backupCount: backups.length, backupHealth: backupStatus, rateLimiting: { rejections: rateLimitRejections, mode: usePostgres && process.env.AGENTGUARD_SHARED_RATE_LIMIT !== 'false' ? 'shared-postgres' : 'local-memory', configuredPerMinute: Number(process.env.AGENTGUARD_RATE_LIMIT || 240), agentPerMinute: Number(process.env.AGENTGUARD_AGENT_RATE_LIMIT || process.env.AGENTGUARD_RATE_LIMIT || 240), companyPerMinute: Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10), workspacePerMinute: boundedRateLimit(process.env.AGENTGUARD_WORKSPACE_RATE_LIMIT, Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10) * 10), batchAccounting: 'each telemetry envelope consumes capacity', inFlight: Number(inFlight || 0), inFlightLimit: boundedRateLimit(process.env.AGENTGUARD_MAX_INFLIGHT_TELEMETRY, 50), overloadRejections: telemetryOverloadRejections, committed: telemetryCommitCount, commitFailures: telemetryCommitFailures, averageCommitMs: telemetryCommitCount ? Math.round(telemetryLatencyTotalMs / telemetryCommitCount) : 0, maxCommitMs: telemetryLatencyMaxMs, lastCommitAt: telemetryLastCommitAt }, generatedAt: new Date().toISOString() });
     } catch (error) { return json(res, 500, { error: 'Operations health unavailable', detail: error.message }); }
   }
   if (url.pathname === '/api/governance/uncertain-executions' && req.method === 'GET') {
@@ -1793,4 +1801,4 @@ if (require.main === module) {
     server.listen(port, () => console.log(`AgentGuard running at http://localhost:${port}`));
   }).catch(error => { console.error('Storage initialization failed:', error); process.exitCode = 1; });
 }
-module.exports = { server, normalizedRuntimeUrl, probeManagedAgent, runtimeUrlOwner, acquireTelemetrySlot, listBackupArtifacts };
+module.exports = { server, normalizedRuntimeUrl, probeManagedAgent, runtimeUrlOwner, acquireTelemetrySlot, listBackupArtifacts, backupHealth };

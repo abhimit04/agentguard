@@ -89,6 +89,8 @@ admission pressure and database-ingestion health.
 System Health discovers both JSON compatibility snapshots and scheduled
 PostgreSQL `.sql.gz` backups, including dated backups in daily, weekly, and
 monthly folders. Sidecar manifest files are not presented as backups.
+Set `AGENTGUARD_BACKUP_MAX_AGE_HOURS` (default `26`) to make System Health
+show whether the newest backup is healthy, overdue, or missing.
 
 Every JSON request is measured as bytes while streaming. Protected gateway and
 policy endpoints reject requests above `AGENTGUARD_MAX_BODY_BYTES` with `413`
