@@ -1286,6 +1286,19 @@ const server = http.createServer(async (req, res) => {
     } catch (error) { return json(res, error.statusCode || (usePostgres && /^[0-9A-Z]{5}$/.test(error.code || '') ? 503 : 400), { error: error.message }); }
   }
   const agentMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
+  if (agentMatch && req.method === 'DELETE') {
+    if (!requireRole('configure')) return;
+    try {
+      const store = structuredClone(readStore()); const workspaceId = workspaceForRequest(req); const agentId = decodeURIComponent(agentMatch[1]);
+      const agent = usePostgres ? await agentRepository.get(workspaceId, agentId) : store.agents.find(item => item.id === agentId && inWorkspace(item, workspaceId));
+      if (!agent) return json(res, 404, { error: 'Agent not found' });
+      if (!agent.archived && agent.status !== 'archived') return json(res, 409, { error: 'Only archived agents can be permanently deleted' });
+      const audit = createAuditEvent(store, 'action', `Agent permanently deleted: ${agent.name}`, { workspaceId, agentId: agent.id, actor: auth.session(req)?.email || 'workspace-user', metadata: { permanent: true } });
+      if (usePostgres) { const saved = await agentRepository.deleteArchivedWithAudit(agent, audit); store.events.unshift(saved.audit); }
+      else { store.agents = store.agents.filter(item => !(item.id === agentId && inWorkspace(item, workspaceId))); await event(store, 'action', audit.message, audit); }
+      writeStore(store); return json(res, 200, { deleted: true, agentId });
+    } catch (error) { return json(res, error.statusCode || 400, { error: error.message }); }
+  }
   if (agentMatch && req.method === 'PATCH') {
     if (!requireRole('configure')) return;
     try {
