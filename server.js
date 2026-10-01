@@ -1314,11 +1314,11 @@ const server = http.createServer(async (req, res) => {
       const now = new Date().toISOString();
       const policy = { id: randomUUID(), workspaceId, name: input.name, scope: input.scope, agentId: input.agentId, actionType: input.actionType, resourcePattern: input.resourcePattern || '*', effect: input.effect || 'require_approval', priority: Number(input.priority ?? 100), enabled: Boolean(input.enabled), ...normalizedBudget(input), version: 1, createdAt: now, updatedAt: now };
       const audit = createAuditEvent(store, 'action', `Policy created: ${policy.name}`, { workspaceId, eventType: 'policy.created', policyId: policy.id, version: policy.version, actor: 'workspace-user' });
-      let committedAudit = audit;
-      if (usePostgres) committedAudit = (await governanceRepository.savePolicyWithAudit(policy, audit, 0)).audit;
+      let committedAudit = audit, assessmentAudits = [];
+      if (usePostgres) { const saved = await governanceRepository.savePolicyWithAudit(policy, audit, 0); committedAudit = saved.audit; assessmentAudits = saved.assessmentAudits || []; }
       else { await governanceRepository.upsertPolicy(policy); await event(store, 'action', audit.message, audit); }
       store.policies.push(policy);
-      if (usePostgres) store.events.unshift(committedAudit);
+      if (usePostgres) store.events.unshift(committedAudit, ...assessmentAudits);
       writeStore(store);
       return json(res, 201, policy);
     } catch (error) { return json(res, error.statusCode || (usePostgres && error.code === '23505' ? 409 : 400), { error: error.message }); }
@@ -1576,13 +1576,13 @@ const server = http.createServer(async (req, res) => {
       policy.version = (policy.version || 1) + 1;
       policy.updatedAt = new Date().toISOString();
       const audit = createAuditEvent(store, 'action', `Policy updated: ${policy.name} (version ${policy.version})`, { workspaceId, eventType: 'policy.updated', policyId: policy.id, version: policy.version, actor: 'workspace-user' });
-      let committedAudit = audit;
-      if (usePostgres) committedAudit = (await governanceRepository.savePolicyWithAudit(policy, audit, expectedVersion)).audit;
+      let committedAudit = audit, assessmentAudits = [];
+      if (usePostgres) { const saved = await governanceRepository.savePolicyWithAudit(policy, audit, expectedVersion); committedAudit = saved.audit; assessmentAudits = saved.assessmentAudits || []; }
       else await governanceRepository.upsertPolicy(policy);
       const mirrorIndex = store.policies.findIndex(item => item.id === policy.id && inWorkspace(item, workspaceId));
       if (mirrorIndex >= 0) store.policies[mirrorIndex] = policy;
       else store.policies.push(policy);
-      if (usePostgres) store.events.unshift(committedAudit);
+      if (usePostgres) store.events.unshift(committedAudit, ...assessmentAudits);
       else await event(store, 'action', audit.message, audit);
       writeStore(store); return json(res, 200, policy);
     }

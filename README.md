@@ -89,6 +89,15 @@ budget, it displays the current reserved usage and the projected usage for the
 proposed action, including whether that action would be blocked. It never
 reserves capacity or changes an agent's runtime state.
 
+### Assessment dependency records
+
+Editing or creating a policy records a **policy dependency** change on the
+approved assessments of agents the policy applies to. This is an operational
+change: it preserves the approved assessment and adds a visible pending-change
+record with the policy ID, version, effect, action type, and resource pattern.
+It gives reviewers the policy context at the next assessment review without
+forcing a low-signal reassessment for every routine policy revision.
+
 If a claim remains unresolved for five minutes, reviewers see it under
 **Uncertain executions** on the overview. Verify the downstream idempotency
 record or other authoritative evidence before choosing **Confirm completed** or

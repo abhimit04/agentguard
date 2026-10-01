@@ -435,7 +435,8 @@ async function upsertPolicy(item) { if (!usePostgres) return undefined; await po
 async function savePolicyWithAudit(item, audit, expectedVersion) {
   if (!usePostgres) return undefined;
   return postgresTransaction(async client => {
-    const existing = await client.query('SELECT version FROM ag_policies WHERE workspace_id=$1 AND id=$2 FOR UPDATE', [item.workspaceId || 'default', item.id]);
+    const workspaceId = item.workspaceId || 'default';
+    const existing = await client.query('SELECT version,payload FROM ag_policies WHERE workspace_id=$1 AND id=$2 FOR UPDATE', [workspaceId, item.id]);
     if (expectedVersion === 0 && existing.rowCount) {
       const error = new Error('Policy already exists'); error.statusCode = 409; throw error;
     }
@@ -453,7 +454,23 @@ async function savePolicyWithAudit(item, audit, expectedVersion) {
     if (!savedAudit.chainSequence) {
       const error = new Error('Audit event ID already exists; policy change was not committed'); error.statusCode = 409; throw error;
     }
-    return { policy: item, audit: savedAudit };
+    // Policy changes are assessment-relevant operational changes. They do not
+    // invalidate an approved assessment by themselves, but reviewers can see
+    // the exact policy/version delta at the next review.
+    const previousAgentId = existing.rows[0]?.payload?.agentId || null;
+    const impacted = await client.query(`SELECT id,agent_id,payload FROM ag_assessments
+      WHERE workspace_id=$1 AND status='approved' AND ($2='*' OR $3='*' OR agent_id=$2 OR agent_id=$3) FOR UPDATE`, [workspaceId, item.agentId, previousAgentId]);
+    const assessmentAudits = [];
+    const recordedAt = new Date().toISOString();
+    for (const row of impacted.rows) {
+      const prior = existing.rows[0]?.payload || null;
+      const change = { changedFields: ['policyDependency'], reason: `Policy dependency ${expectedVersion > 0 ? 'updated' : 'added'}: ${item.name}`, details: { policyId: item.id, policyVersion: item.version, previousPolicyVersion: prior?.version || null, effect: item.effect, actionType: item.actionType, resourcePattern: item.resourcePattern || '*' }, recordedAt };
+      const payload = { ...row.payload, pendingChanges: [...(row.payload.pendingChanges || []), change].slice(-50), updatedAt: recordedAt };
+      await client.query('UPDATE ag_assessments SET updated_at=$3::timestamptz,payload=$4::jsonb WHERE workspace_id=$1 AND id=$2', [workspaceId, row.id, recordedAt, JSON.stringify(payload)]);
+      const assessmentAudit = await appendEventWithClient(client, { ...audit, id: require('node:crypto').randomUUID(), agentId: row.agent_id, eventType: 'assessment.change_recorded', kind: 'action', message: `Policy dependency recorded for assessment: ${item.name}`, assessmentId: row.id, policyId: item.id, policyVersion: item.version, reason: change.reason, changedFields: change.changedFields, changeDetails: change.details, createdAt: recordedAt });
+      assessmentAudits.push(assessmentAudit);
+    }
+    return { policy: item, audit: savedAudit, assessmentAudits };
   });
 }
 async function upsertApproval(item) { if (!usePostgres) return undefined; await postgresQuery(`INSERT INTO ag_approvals (workspace_id,id,agent_id,policy_id,status,action,action_ref,created_at,decided_at,payload) VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8::timestamptz,now()),NULLIF($9,'')::timestamptz,$10::jsonb) ON CONFLICT (workspace_id,id) DO UPDATE SET status=EXCLUDED.status,decided_at=EXCLUDED.decided_at,payload=EXCLUDED.payload`, [item.workspaceId || 'default', item.id, item.agentId, item.policyId || null, item.status || 'pending', item.action, item.actionRef || null, item.createdAt || null, item.decidedAt || '', JSON.stringify(item)]); }
