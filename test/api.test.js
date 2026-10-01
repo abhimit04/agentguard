@@ -35,6 +35,23 @@ test('operations health exposes telemetry admission capacity', async () => {
   assert.equal(health.rateLimiting.overloadRejections, 0);
 });
 
+test('oversized JSON is rejected before policy processing', async () => {
+  const original = process.env.AGENTGUARD_MAX_BODY_BYTES;
+  process.env.AGENTGUARD_MAX_BODY_BYTES = '16384';
+  try {
+    const response = await fetch(`${baseUrl}/api/policies/simulate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId: 'x', actionType: 'research', resource: 'x'.repeat(20_000) }),
+    });
+    assert.equal(response.status, 413);
+    assert.match((await response.json()).error, /Request body exceeds/);
+  } finally {
+    if (original === undefined) delete process.env.AGENTGUARD_MAX_BODY_BYTES;
+    else process.env.AGENTGUARD_MAX_BODY_BYTES = original;
+  }
+});
+
 test('integration routes return Retry-After when the caller exceeds its rate limit', async () => {
   const agentId = `rate-limit-agent-${Date.now()}`;
   const request = () => fetch(`${baseUrl}/api/agent-events`, {

@@ -31,6 +31,8 @@ Progress (2026-10-01, multi-instance limiter proof): Telemetry limits now apply 
 
 Progress (2026-10-01, bounded telemetry admission): PostgreSQL telemetry ingestion now acquires a short-lived shared database lease before transactional work begins. The lease pool is globally bounded across instances and expires after a crash; full capacity returns a retryable `503` before telemetry is committed. The multi-instance workflow verifies saturation and release. Sustained load profiling and queue-latency objectives remain open.
 
+Progress (2026-10-01, streaming body bound): JSON request parsing now counts incoming bytes before parsing or concatenating the full payload. Oversized requests receive `413` without repeated full-string copies, reducing memory and CPU amplification during malformed or abusive telemetry traffic.
+
 ## Delivery objective
 
 Prove one complete governed execution: an authenticated agent requests an action, policy evaluation requires approval, execution waits, an authorized reviewer approves, only the bound action receives an execution grant, and its outcome is durably audited. Demonstrate denial, expiry, duplicate delivery, database failure, and recovery after a real process restart.

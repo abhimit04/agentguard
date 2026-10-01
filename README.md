@@ -85,6 +85,11 @@ configured lease duration. When full, AgentGuard responds with `503` and
 System Health exposes active telemetry leases, the configured in-flight limit,
 and overload rejections so operators can see admission pressure.
 
+Every JSON request is measured as bytes while streaming. Protected gateway and
+policy endpoints reject requests above `AGENTGUARD_MAX_BODY_BYTES` with `413`
+before JSON parsing; the default is 1 MB and the minimum configurable safety
+floor is 16 KB.
+
 ## PostgreSQL migration state
 
 ### Durable governed execution

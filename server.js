@@ -322,19 +322,28 @@ function usageReconciliation(events) {
 }
 function body(req) {
   return new Promise((resolve, reject) => {
-    let raw = '';
+    const chunks = [];
+    let bytes = 0;
     const maxBytes = Math.max(16_384, Number(process.env.AGENTGUARD_MAX_BODY_BYTES || 1_000_000));
     let rejected = false;
     req.on('data', chunk => {
       if (rejected) return;
-      raw += chunk;
-      if (Buffer.byteLength(raw, 'utf8') > maxBytes) {
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
         rejected = true;
         reject(Object.assign(new Error(`Request body exceeds ${maxBytes} bytes`), { statusCode: 413 }));
         req.resume();
+        return;
       }
+      chunks.push(chunk);
     });
-    req.on('end', () => { try { resolve(raw ? JSON.parse(raw) : {}); } catch { reject(new Error('Invalid JSON')); } });
+    req.on('end', () => {
+      if (rejected) return;
+      try {
+        const raw = chunks.length ? Buffer.concat(chunks, bytes).toString('utf8') : '';
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch { reject(new Error('Invalid JSON')); }
+    });
   });
 }
 
@@ -896,7 +905,7 @@ const server = http.createServer(async (req, res) => {
       const hasMore = rows.length === rawLimit && lastSequence > 1;
       const nextCursor = hasMore ? auditCursor.encodeCursor({ operation: 'events', workspaceId, beforeSequence: lastSequence, upperSequence }) : null;
       return json(res, 200, { events: rows.map(auditRepository.eventRow), page: { limit: rawLimit, beforeSequence, upperSequence, nextCursor } });
-    } catch (error) { return json(res, 400, { error: error.message }); }
+    } catch (error) { return json(res, error.statusCode || 400, { error: error.message }); }
   }
   if (url.pathname === '/api/audit/verify' && req.method === 'GET') {
     if (!requireRole('read')) return;
@@ -1403,7 +1412,7 @@ const server = http.createServer(async (req, res) => {
       const simulatedBudgetReason = budgetReason || dailyBudget?.reason || null;
       const explanation = policy ? `Matched ${policy.agentId === '*' ? 'workspace-wide' : 'agent-specific'} policy at priority ${policy.priority ?? 100}; ${policy.actionType} ${policy.resourcePattern || '*'} → ${policy.effect}.` : 'No enabled policy matched this agent, action type, and resource; default allow applies.';
       return json(res, 200, { decision: policy ? simulatedBudgetReason ? 'block' : policy.effect === 'require_approval' ? 'awaiting_approval' : policy.effect : 'allow', policy: policy ? { id: policy.id, name: policy.name, agentId: policy.agentId, actionType: policy.actionType, resourcePattern: policy.resourcePattern || '*', effect: policy.effect, version: policy.version, priority: policy.priority, maxTokens: policy.maxTokens || null, maxCostUsd: policy.maxCostUsd || null, dailyMaxTokens: policy.dailyMaxTokens || null, dailyMaxCostUsd: policy.dailyMaxCostUsd || null, dailyMaxActions: policy.dailyMaxActions || null } : null, dailyBudget, reason: simulatedBudgetReason || explanation, evaluated: { agentId: agent.id, actionType: input.actionType, resource, action: input.action || null, estimatedTokens: input.estimatedTokens ?? null, estimatedCostUsd: input.estimatedCostUsd ?? null } });
-    } catch (error) { return json(res, 400, { error: error.message }); }
+    } catch (error) { return json(res, error.statusCode || 400, { error: error.message }); }
   }
   if (url.pathname === '/api/guard/check' && req.method === 'POST') {
     try {
