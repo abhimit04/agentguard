@@ -72,6 +72,23 @@ function secureHeaders(res) {
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
 }
+function listBackupArtifacts(rootDirectory) {
+  if (!fs.existsSync(rootDirectory)) return [];
+  const artifacts = [];
+  const scan = (directory, relative = '') => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const relativeName = path.join(relative, entry.name);
+      const target = path.join(directory, entry.name);
+      if (entry.isDirectory()) { scan(target, relativeName); continue; }
+      if (!entry.isFile() || entry.name.endsWith('.manifest.json')) continue;
+      const format = entry.name.endsWith('.sql.gz') ? 'postgres-sql-gzip' : entry.name.endsWith('.json') ? 'json-snapshot' : null;
+      if (!format) continue;
+      artifacts.push({ name: relativeName.replaceAll(path.sep, '/'), format, modifiedAt: fs.statSync(target).mtime.toISOString() });
+    }
+  };
+  scan(rootDirectory);
+  return artifacts.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+}
 function authorizedIntegration(req) { return Boolean(integrationApiKey) && (req.headers.authorization === `Bearer ${integrationApiKey}` || req.headers['x-agentguard-api-key'] === integrationApiKey); }
 function gatewayIdentity(req, store, requestedAgentId) {
   const companyId = String(req.headers['x-agentguard-company'] || '');
@@ -1011,8 +1028,7 @@ const server = http.createServer(async (req, res) => {
         const row = headRows.rows[0] || {}; audit = { status: Number(row.unhashed || 0) === 0 ? 'healthy' : 'attention_required', events: Number(row.events || 0), unhashed: Number(row.unhashed || 0), head: row.head || null, latest: auditRows[0]?.createdAt || null };
         for (const item of executionRows.rows) { const key = item.state === 'awaiting_approval' ? 'awaitingApproval' : item.state; if (key in execution) execution[key] = item.count; }
       }
-      const backupDirectory = path.join(__dirname, 'backups');
-      const backups = fs.existsSync(backupDirectory) ? fs.readdirSync(backupDirectory).filter(name => name.endsWith('.json')).map(name => ({ name, modifiedAt: fs.statSync(path.join(backupDirectory, name)).mtime.toISOString() })).sort((a,b)=>b.modifiedAt.localeCompare(a.modifiedAt)) : [];
+      const backups = listBackupArtifacts(path.join(__dirname, 'backups'));
       const staleAgents = store.agents.filter(item => inWorkspace(item, workspaceId) && item.lastSeenAt && Date.now() - new Date(item.lastSeenAt).getTime() > Number(process.env.AGENTGUARD_HEARTBEAT_TIMEOUT_MS || 60000)).length;
       const inFlight = usePostgres ? await require('./storage').postgresQuery('SELECT count(*)::int AS active FROM ag_telemetry_leases WHERE expires_at > now()').then(result => result.rows[0].active) : localTelemetryInflight;
       return json(res, 200, { workspaceId, storage: usePostgres ? 'postgres' : 'sqlite', audit, execution, staleAgents, latestBackup: backups[0] || null, backupCount: backups.length, rateLimiting: { rejections: rateLimitRejections, mode: usePostgres && process.env.AGENTGUARD_SHARED_RATE_LIMIT !== 'false' ? 'shared-postgres' : 'local-memory', configuredPerMinute: Number(process.env.AGENTGUARD_RATE_LIMIT || 240), agentPerMinute: Number(process.env.AGENTGUARD_AGENT_RATE_LIMIT || process.env.AGENTGUARD_RATE_LIMIT || 240), companyPerMinute: Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10), workspacePerMinute: boundedRateLimit(process.env.AGENTGUARD_WORKSPACE_RATE_LIMIT, Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10) * 10), batchAccounting: 'each telemetry envelope consumes capacity', inFlight: Number(inFlight || 0), inFlightLimit: boundedRateLimit(process.env.AGENTGUARD_MAX_INFLIGHT_TELEMETRY, 50), overloadRejections: telemetryOverloadRejections, committed: telemetryCommitCount, commitFailures: telemetryCommitFailures, averageCommitMs: telemetryCommitCount ? Math.round(telemetryLatencyTotalMs / telemetryCommitCount) : 0, maxCommitMs: telemetryLatencyMaxMs, lastCommitAt: telemetryLastCommitAt }, generatedAt: new Date().toISOString() });
@@ -1777,4 +1793,4 @@ if (require.main === module) {
     server.listen(port, () => console.log(`AgentGuard running at http://localhost:${port}`));
   }).catch(error => { console.error('Storage initialization failed:', error); process.exitCode = 1; });
 }
-module.exports = { server, normalizedRuntimeUrl, probeManagedAgent, runtimeUrlOwner, acquireTelemetrySlot };
+module.exports = { server, normalizedRuntimeUrl, probeManagedAgent, runtimeUrlOwner, acquireTelemetrySlot, listBackupArtifacts };

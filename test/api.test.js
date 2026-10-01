@@ -8,6 +8,10 @@ const assert = require('node:assert/strict');
 const { server, acquireTelemetrySlot } = require('../server');
 const { readStore, writeStore } = require('../storage');
 const { issueToken } = require('../gateway');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { listBackupArtifacts } = require('../server');
 
 let baseUrl;
 test.before(async () => {
@@ -36,6 +40,18 @@ test('operations health exposes telemetry admission capacity', async () => {
   assert.equal(health.rateLimiting.committed, 0);
   assert.equal(health.rateLimiting.commitFailures, 0);
   assert.equal(health.rateLimiting.averageCommitMs, 0);
+});
+
+test('backup discovery includes scheduled PostgreSQL dumps in nested folders', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agentguard-backups-'));
+  try {
+    fs.mkdirSync(path.join(root, 'daily'));
+    fs.writeFileSync(path.join(root, 'daily', 'agentguard.sql.gz'), 'dump');
+    fs.writeFileSync(path.join(root, 'legacy.json'), '{}');
+    fs.writeFileSync(path.join(root, 'daily', 'agentguard.sql.gz.manifest.json'), '{}');
+    const backups = listBackupArtifacts(root);
+    assert.deepEqual(backups.map(item => [item.name, item.format]).sort(), [['daily/agentguard.sql.gz', 'postgres-sql-gzip'], ['legacy.json', 'json-snapshot']]);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('oversized JSON is rejected before policy processing', async () => {

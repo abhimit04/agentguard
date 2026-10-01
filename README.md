@@ -86,6 +86,10 @@ System Health exposes active telemetry leases, the configured in-flight limit,
 overload rejections, commit latency, and commit failures so operators can see
 admission pressure and database-ingestion health.
 
+System Health discovers both JSON compatibility snapshots and scheduled
+PostgreSQL `.sql.gz` backups, including dated backups in daily, weekly, and
+monthly folders. Sidecar manifest files are not presented as backups.
+
 Every JSON request is measured as bytes while streaming. Protected gateway and
 policy endpoints reject requests above `AGENTGUARD_MAX_BODY_BYTES` with `413`
 before JSON parsing; the default is 1 MB and the minimum configurable safety
