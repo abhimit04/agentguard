@@ -56,7 +56,14 @@ const alertWebhookToken = process.env.AGENTGUARD_ALERT_WEBHOOK_TOKEN || '';
 const auditSigningConfigured = Boolean(process.env.AGENTGUARD_AUDIT_SIGNING_PRIVATE_KEY_FILE && process.env.AGENTGUARD_AUDIT_SIGNING_KEY_ID && fs.existsSync(path.resolve(__dirname, process.env.AGENTGUARD_AUDIT_SIGNING_PRIVATE_KEY_FILE)));
 function json(res, code, body, headers = {}) { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...headers }); res.end(JSON.stringify(body)); }
 function redirect(res, location, headers = {}) { res.writeHead(302, { Location: location, ...headers }); res.end(); }
-function secureHeaders(res) { res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('X-Frame-Options', 'DENY'); res.setHeader('Referrer-Policy', 'no-referrer'); }
+function secureHeaders(res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https://lh3.googleusercontent.com; connect-src 'self'; form-action 'self' https://accounts.google.com");
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+}
 function authorizedIntegration(req) { return Boolean(integrationApiKey) && (req.headers.authorization === `Bearer ${integrationApiKey}` || req.headers['x-agentguard-api-key'] === integrationApiKey); }
 function gatewayIdentity(req, store, requestedAgentId) {
   const companyId = String(req.headers['x-agentguard-company'] || '');

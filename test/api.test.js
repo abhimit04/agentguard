@@ -20,6 +20,9 @@ test('health endpoint reports ready', async () => {
   const response = await fetch(`${baseUrl}/api/health`);
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true });
+  assert.match(response.headers.get('content-security-policy'), /default-src 'self'/);
+  assert.equal(response.headers.get('x-frame-options'), 'DENY');
+  assert.match(response.headers.get('permissions-policy'), /camera=\(\)/);
 });
 
 test('integration routes return Retry-After when the caller exceeds its rate limit', async () => {

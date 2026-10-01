@@ -49,6 +49,11 @@ docker compose --profile production up -d --build postgres backup backup-manifes
 
 Caddy obtains and renews the public certificate automatically. Production startup rejects a missing/non-HTTPS public origin or a callback URL whose host/path does not match. The app sets Secure session and OAuth cookies in production; Caddy adds HSTS and standard response headers. Keep `3100` closed to external clients. The actual DNS, firewall, Google OAuth round-trip, certificate issuance/renewal, and host-specific Docker build still need to be verified in the client's staging environment; the profile is not a substitute for those deployment checks.
 
+AgentGuard also sends a restrictive Content Security Policy, anti-framing,
+permissions, referrer, and cross-origin-opener headers from the application.
+The only external image origin allowed by default is Google profile imagery used
+by Workspace login.
+
 Use `AGENTGUARD_STORAGE=sqlite` for local mode. PostgreSQL is selected when `AGENTGUARD_STORAGE=postgres` or `DATABASE_URL` is configured.
 
 ### Telemetry fair-use limits
