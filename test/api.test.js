@@ -26,6 +26,15 @@ test('health endpoint reports ready', async () => {
   assert.match(response.headers.get('permissions-policy'), /camera=\(\)/);
 });
 
+test('operations health exposes telemetry admission capacity', async () => {
+  const response = await fetch(`${baseUrl}/api/operations/health`);
+  const health = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(health.rateLimiting.inFlight, 0);
+  assert.equal(health.rateLimiting.inFlightLimit, 50);
+  assert.equal(health.rateLimiting.overloadRejections, 0);
+});
+
 test('integration routes return Retry-After when the caller exceeds its rate limit', async () => {
   const agentId = `rate-limit-agent-${Date.now()}`;
   const request = () => fetch(`${baseUrl}/api/agent-events`, {

@@ -82,6 +82,9 @@ short-lived database leases, so a server crash releases capacity after the
 configured lease duration. When full, AgentGuard responds with `503` and
 `Retry-After: 1`; callers should retry the identical event ID.
 
+System Health exposes active telemetry leases, the configured in-flight limit,
+and overload rejections so operators can see admission pressure.
+
 ## PostgreSQL migration state
 
 ### Durable governed execution
