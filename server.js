@@ -1650,6 +1650,13 @@ if (require.main === module) {
         if (expiredApprovals.length) writeStore(store);
       } catch (error) { console.error('Approval expiry sweep failed:', error.message); }
       try {
+        const approvalReminders = await governanceRepository.createDueApprovalReminders(Number(process.env.AGENTGUARD_APPROVAL_REMINDER_MINUTES || 5));
+        if (approvalReminders.length) {
+          for (const item of approvalReminders) { store.events.unshift(item.audit); store.alerts.unshift(item.alert); if (alertWebhookUrl) void dispatchAlertDelivery(item.alert); }
+          writeStore(store);
+        }
+      } catch (error) { console.error('Approval reminder sweep failed:', error.message); }
+      try {
         const dueReviews = await governanceRepository.createDueAssessmentReviewAlerts();
         if (dueReviews.length) {
           for (const item of dueReviews) { store.events.unshift(item.audit); store.incidents.unshift(item.incident); store.alerts.unshift(item.alert); }

@@ -571,6 +571,37 @@ async function expireDueApprovals(limit = 100) {
     return expired;
   });
 }
+
+// Send one actionable reminder before an approval expires. The alert and
+// webhook outbox row are committed with the audit record, and the NOT EXISTS
+// guard makes repeated worker sweeps idempotent.
+async function createDueApprovalReminders(reminderMinutes = 5, limit = 100) {
+  if (!usePostgres) return [];
+  const minutes = Math.max(1, Math.min(1440, Number(reminderMinutes) || 5));
+  return postgresTransaction(async client => {
+    const due = await client.query(`SELECT a.workspace_id,a.id,a.agent_id,a.policy_id,a.action,a.action_ref,a.payload
+      FROM ag_approvals a
+      WHERE a.status='pending'
+        AND NULLIF(a.payload->>'expiresAt','')::timestamptz > now()
+        AND NULLIF(a.payload->>'expiresAt','')::timestamptz <= now() + ($1::int * interval '1 minute')
+        AND NOT EXISTS (SELECT 1 FROM ag_alerts x WHERE x.workspace_id=a.workspace_id
+          AND x.payload->>'notificationType'='approval.due_soon' AND x.payload->>'approvalId'=a.id)
+      ORDER BY NULLIF(a.payload->>'expiresAt','')::timestamptz LIMIT $2 FOR UPDATE SKIP LOCKED`, [minutes, limit]);
+    const reminders = [];
+    for (const row of due.rows) {
+      const current = approval(row); const createdAt = new Date().toISOString();
+      const eventId = require('node:crypto').randomUUID();
+      const message = `Approval due soon: ${current.action}`;
+      const audit = await appendEventWithClient(client, { id: eventId, workspaceId: row.workspace_id, agentId: row.agent_id, kind: 'approval', eventType: 'approval.due_soon', actor: 'system', message, action: current.action, actionType: current.actionType || null, resource: current.resource || null, approvalId: row.id, actionRef: row.action_ref, policyId: row.policy_id, expiresAt: current.expiresAt, createdAt });
+      const alert = { id: require('node:crypto').randomUUID(), workspaceId: row.workspace_id, incidentId: null, agentId: row.agent_id, status: 'open', severity: 'medium', title: message, createdAt, channels: ['in-app', 'webhook'], notificationType: 'approval.due_soon', approvalId: row.id, action: current.action, actionType: current.actionType || null, resource: current.resource || null, expiresAt: current.expiresAt };
+      await client.query(`INSERT INTO ag_alerts (workspace_id,id,incident_id,agent_id,status,severity,title,created_at,payload)
+        VALUES ($1,$2,NULL,$3,'open','medium',$4,$5::timestamptz,$6::jsonb)`, [alert.workspaceId, alert.id, alert.agentId, alert.title, alert.createdAt, JSON.stringify(alert)]);
+      await client.query(`INSERT INTO ag_alert_outbox (workspace_id,alert_id,channel,status) VALUES ($1,$2,'webhook','queued') ON CONFLICT DO NOTHING`, [alert.workspaceId, alert.id]);
+      reminders.push({ approval: current, audit, alert });
+    }
+    return reminders;
+  });
+}
 async function createDueAssessmentReviewAlerts(limit = 100) {
   if (!usePostgres) return [];
   return postgresTransaction(async client => {
@@ -629,4 +660,4 @@ function appendEvent(item) {
 }
 function flushAudit() { return auditWriteChain; }
 
-module.exports = { listPolicies, getPolicy, findApprovalForAction, decideApproval, decideApprovalWithAudit, checkGovernedAction, previewDailyBudget, expireDueApprovals, createDueAssessmentReviewAlerts, createUpcomingAssessmentReviewAlerts, listApprovals, getApproval, createApprovalWithAudit, listEvents, listAssessments, getAssessment, listAssessmentRevisions, listIncidents, upsertIncident, saveIncidentWithAudit, listAlerts, upsertAlert, acknowledgeAlertWithAudit, listAlertDeliveries, upsertAlertDelivery, enqueueAlertDelivery, enqueueMissingAlertDeliveries, claimAlertDeliveries, finishAlertDelivery, exportEvidence, upsertAssessment, saveAssessmentWithAudit, upsertPolicy, savePolicyWithAudit, upsertApproval, upsertGovernedAction, claimGovernedAction, completeGovernedAction, listUncertainGovernedActions, reconcileGovernedAction, recordGovernanceSignal, appendEvent, appendEventWithClient, flushAudit };
+module.exports = { listPolicies, getPolicy, findApprovalForAction, decideApproval, decideApprovalWithAudit, checkGovernedAction, previewDailyBudget, expireDueApprovals, createDueApprovalReminders, createDueAssessmentReviewAlerts, createUpcomingAssessmentReviewAlerts, listApprovals, getApproval, createApprovalWithAudit, listEvents, listAssessments, getAssessment, listAssessmentRevisions, listIncidents, upsertIncident, saveIncidentWithAudit, listAlerts, upsertAlert, acknowledgeAlertWithAudit, listAlertDeliveries, upsertAlertDelivery, enqueueAlertDelivery, enqueueMissingAlertDeliveries, claimAlertDeliveries, finishAlertDelivery, exportEvidence, upsertAssessment, saveAssessmentWithAudit, upsertPolicy, savePolicyWithAudit, upsertApproval, upsertGovernedAction, claimGovernedAction, completeGovernedAction, listUncertainGovernedActions, reconcileGovernedAction, recordGovernanceSignal, appendEvent, appendEventWithClient, flushAudit };

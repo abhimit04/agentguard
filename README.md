@@ -13,6 +13,7 @@ AgentGuard is an AI-agent control plane for enterprise teams. It provides a cent
 - Runtime states including registered, connected/healthy, running, idle, failed, offline, and archived.
 - Policy effects: allow, require approval, or block, with policy versions, action references, tool/resource patterns, per-action limits, daily cumulative budgets, and a no-side-effect simulator.
 - Approval lifecycle with exact action/policy matching, reviewer identity, and configurable automatic expiry.
+- Due-soon approval reminders with in-app alerts and durable webhook delivery before expiry.
 - Audit logging that excludes heartbeat noise and records agent activity, policy decisions, connector events, and governance changes.
 - Tamper-evident PostgreSQL audit chain with per-workspace previous-hash links and SHA-256 event hashes.
 - SQLite local fallback and PostgreSQL production persistence with scheduled Docker backups.
@@ -83,6 +84,15 @@ concurrent requests cannot overspend the same limit. A reviewer denial or an
 approval expiry releases that action's reservation; an approved or directly
 allowed action remains counted for the day. Token and cost limits require the
 agent to send an estimate with its governed action request.
+
+### Approval reminders
+
+Pending approvals receive one **due soon** reminder before they expire. The
+default is five minutes, configured with `AGENTGUARD_APPROVAL_REMINDER_MINUTES`
+(1–1,440). The background governance sweep writes a hash-chained
+`approval.due_soon` event, creates an in-app alert, and queues a signed webhook
+delivery. Repeated sweeps do not duplicate the reminder. Expiry still denies
+the approval and creates its own incident and alert.
 
 The **Simulate a decision** dialog is read-only. For a policy with a daily
 budget, it displays the current reserved usage and the projected usage for the
