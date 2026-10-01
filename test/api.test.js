@@ -7,6 +7,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { server } = require('../server');
 const { readStore, writeStore } = require('../storage');
+const { issueToken } = require('../gateway');
 
 let baseUrl;
 test.before(async () => {
@@ -37,6 +38,26 @@ test('integration routes return Retry-After when the caller exceeds its rate lim
   const rejected = await request();
   assert.equal(rejected.status, 429);
   assert.equal(rejected.headers.get('retry-after'), '60');
+});
+
+test('gateway batches consume one rate-limit unit per telemetry envelope', async () => {
+  const original = readStore();
+  const store = structuredClone(original);
+  const agentId = `batch-limit-agent-${Date.now()}`;
+  const credential = issueToken();
+  store.agents.push({ id: agentId, workspaceId: 'default', companyId: 'default', name: 'Batch limit agent', status: 'registered', runtimeStatus: 'offline', credentialHash: credential.hash, tools: [] });
+  writeStore(store);
+  try {
+    const response = await fetch(`${baseUrl}/api/gateway/events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${credential.token}`, 'x-agentguard-company': 'default', 'x-agentguard-agent': agentId },
+      body: JSON.stringify([1, 2, 3].map(index => ({ eventId: `${agentId}-${index}`, companyId: 'default', agentId, eventType: 'running', message: `Batch event ${index}` }))),
+    });
+    assert.equal(response.status, 429);
+    assert.equal(response.headers.get('retry-after'), '60');
+  } finally {
+    writeStore(original);
+  }
 });
 
 test('dashboard endpoint returns the core application resources', async () => {

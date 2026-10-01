@@ -59,13 +59,16 @@ Use `AGENTGUARD_STORAGE=sqlite` for local mode. PostgreSQL is selected when `AGE
 ### Telemetry fair-use limits
 
 AgentGuard applies a general integration limit plus independent telemetry limits
-per company and per agent. In PostgreSQL mode the limits use shared atomic
-minute buckets, so every application instance applies the same capacity rules.
-The defaults are `240` requests/minute per caller or agent and `2,400`
-requests/minute per company. Configure `AGENTGUARD_RATE_LIMIT`,
-`AGENTGUARD_AGENT_RATE_LIMIT`, and `AGENTGUARD_COMPANY_RATE_LIMIT` for the
-deployment. Rejections return HTTP `429` with `Retry-After: 60`; telemetry
-bodies and batches are also bounded before ingestion.
+per workspace, company, and agent. In PostgreSQL mode the limits use shared,
+atomic minute buckets, so every application instance applies the same capacity
+rules. The defaults are `240` requests/minute per caller or agent, `2,400` per
+company, and `24,000` per workspace. Configure `AGENTGUARD_RATE_LIMIT`,
+`AGENTGUARD_AGENT_RATE_LIMIT`, `AGENTGUARD_COMPANY_RATE_LIMIT`, and
+`AGENTGUARD_WORKSPACE_RATE_LIMIT` for the deployment. A batch consumes one unit
+of quota for every telemetry envelope it contains; a 500-event batch cannot
+bypass an individual agent's cap. Expired PostgreSQL buckets are pruned.
+Rejections return HTTP `429` with `Retry-After: 60`; telemetry bodies and
+batches are also bounded before ingestion.
 
 ## PostgreSQL migration state
 
@@ -299,4 +302,4 @@ The consolidated [enterprise roadmap](ROADMAP.md) is the source of truth for pri
 
 PostgreSQL SQL backup manifests can be independently signed with Ed25519. Set `AGENTGUARD_BACKUP_MANIFEST_SIGNING_PRIVATE_KEY_FILE` and `AGENTGUARD_BACKUP_MANIFEST_SIGNING_KEY_ID` when creating manifests, and keep the matching public key outside the backup directory in `AGENTGUARD_BACKUP_MANIFEST_PUBLIC_KEY_FILE`. The restore drill verifies a signature when one is present; unsigned legacy manifests remain readable during the migration window, but new production backups should be signed.
 
-Gateway and integration requests have bounded JSON bodies (`AGENTGUARD_MAX_BODY_BYTES`, default 1 MB) and bounded telemetry batches (maximum 500 envelopes). The local limiter is keyed by route plus a hashed credential/agent/IP identity and counts rejected requests, but it is process-local. Multi-instance production deployments must add a shared workspace/company/agent-aware limiter before claiming overload isolation.
+Gateway and integration requests have bounded JSON bodies (`AGENTGUARD_MAX_BODY_BYTES`, default 1 MB) and bounded telemetry batches (maximum 500 envelopes). PostgreSQL deployments use a shared atomic limiter keyed by hashed caller identity and separate workspace/company/agent scopes; SQLite local development uses a bounded in-memory fallback. The remaining production work is multi-instance overload testing, in-flight queue limits, and client-IP trust configuration behind the reverse proxy.

@@ -47,6 +47,7 @@ const integrationApiKey = process.env.AGENTGUARD_API_KEY || '';
 const requireAuth = process.env.AGENTGUARD_REQUIRE_AUTH === 'true';
 const rateWindow = new Map();
 let rateLimitRejections = 0;
+let lastRateLimitPruneAt = 0;
 const managedPollMs = Math.max(5000, Number(process.env.AGENTGUARD_CONNECTOR_POLL_MS || 15000));
 const approvalTtlMs = Math.max(60_000, Number(process.env.AGENTGUARD_APPROVAL_TTL_MS || 15 * 60_000));
 const uncertainExecutionAfterMs = Math.max(60_000, Number(process.env.AGENTGUARD_EXECUTION_UNCERTAIN_AFTER_MS || 5 * 60_000));
@@ -104,27 +105,40 @@ function scoreRiskAssessment(agent, input) {
   const contributions = { autonomy, dataSensitivity: data, impact, privacy, bias, security, verifiedHumanOversight: oversight };
   return { score: Math.max(0, Math.min(100, Object.values(contributions).reduce((sum, value) => sum + value, 0))), scoringModel: 'agentguard-risk-v1', contributions };
 }
-async function limited(req, { scope = null, identity = null, limit = null } = {}) {
+function boundedRateLimit(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 1_000_000) : fallback;
+}
+async function limited(req, { scope = null, identity = null, limit = null, weight = 1 } = {}) {
   const now = Date.now();
   const caller = String(identity || req.headers.authorization || req.headers['x-agentguard-api-key'] || req.headers['x-agentguard-agent'] || req.socket.remoteAddress || 'local');
   const route = req.url.split('?')[0];
   const bucketScope = scope || route;
   const key = `${bucketScope}:${createHash('sha256').update(caller).digest('hex').slice(0, 16)}`;
-  const configuredLimit = Number(limit || process.env.AGENTGUARD_RATE_LIMIT || 240);
+  const configuredLimit = boundedRateLimit(limit, boundedRateLimit(process.env.AGENTGUARD_RATE_LIMIT, 240));
+  const requestWeight = Math.max(1, Math.min(500, Number(weight) || 1));
   if (usePostgres && process.env.AGENTGUARD_SHARED_RATE_LIMIT !== 'false') {
     const result = await postgresQuery(`INSERT INTO ag_rate_limit_buckets (scope, identity_hash, window_started, request_count)
-      VALUES ($1,$2,date_trunc('minute', now()),1)
-      ON CONFLICT (scope, identity_hash, window_started) DO UPDATE SET request_count=ag_rate_limit_buckets.request_count+1, updated_at=now()
-      RETURNING request_count`, [route, key]);
+      VALUES ($1,$2,date_trunc('minute', now()),$3)
+      ON CONFLICT (scope, identity_hash, window_started) DO UPDATE SET request_count=ag_rate_limit_buckets.request_count+EXCLUDED.request_count, updated_at=now()
+      RETURNING request_count`, [bucketScope, key, requestWeight]);
+    // Buckets are only useful for the active minute. Prune expired entries so
+    // a long-running multi-instance deployment does not retain caller history.
+    if (now - lastRateLimitPruneAt > 60_000) {
+      lastRateLimitPruneAt = now;
+      void postgresQuery("DELETE FROM ag_rate_limit_buckets WHERE window_started < date_trunc('minute', now()) - interval '10 minutes'").catch(() => {});
+    }
     const rejected = result.rows[0].request_count > configuredLimit;
     if (rejected) rateLimitRejections++;
     return rejected;
   }
-  const recent = (rateWindow.get(key) || []).filter(time => now - time < 60_000);
-  recent.push(now);
-  rateWindow.set(key, recent);
-  if (rateWindow.size > 10_000) for (const [entry, times] of rateWindow) if (!times.length || now - times.at(-1) > 60_000) rateWindow.delete(entry);
-  const rejected = recent.length > configuredLimit;
+  const windowStarted = now - (now % 60_000);
+  const bucket = rateWindow.get(key);
+  const current = bucket?.windowStarted === windowStarted ? bucket : { windowStarted, count: 0 };
+  current.count += requestWeight;
+  rateWindow.set(key, current);
+  if (rateWindow.size > 10_000) for (const [entry, value] of rateWindow) if (value.windowStarted < windowStarted - 60_000) rateWindow.delete(entry);
+  const rejected = current.count > configuredLimit;
   if (rejected) rateLimitRejections++;
   return rejected;
 }
@@ -701,7 +715,8 @@ const server = http.createServer(async (req, res) => {
         if (['heartbeat', 'events'].includes(operation) && req.method === 'POST') {
           const companyLimit = Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10);
           const agentLimit = Number(process.env.AGENTGUARD_AGENT_RATE_LIMIT || process.env.AGENTGUARD_RATE_LIMIT || 240);
-          if (await limited(req, { scope: `telemetry:company:${operation}`, identity: agent.companyId, limit: companyLimit }) || await limited(req, { scope: `telemetry:agent:${operation}`, identity: `${agent.companyId}:${agent.id}`, limit: agentLimit })) return rateLimited(res);
+          const workspaceLimit = boundedRateLimit(process.env.AGENTGUARD_WORKSPACE_RATE_LIMIT, companyLimit * 10);
+          if (await limited(req, { scope: `telemetry:workspace:${operation}`, identity: agent.workspaceId, limit: workspaceLimit }) || await limited(req, { scope: `telemetry:company:${operation}`, identity: agent.companyId, limit: companyLimit }) || await limited(req, { scope: `telemetry:agent:${operation}`, identity: `${agent.companyId}:${agent.id}`, limit: agentLimit })) return rateLimited(res);
           const input = await body(req);
           if ((input.agentId && input.agentId !== agentId) || (input.companyId && input.companyId !== agent.companyId)) return json(res, 403, { error: 'Telemetry identity conflicts with the request path' });
           let envelope;
@@ -722,7 +737,8 @@ const server = http.createServer(async (req, res) => {
       try {
         const companyLimit = Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10);
         const agentLimit = Number(process.env.AGENTGUARD_AGENT_RATE_LIMIT || process.env.AGENTGUARD_RATE_LIMIT || 240);
-        if (await limited(req, { scope: `telemetry:company:${operation}`, identity: agent.companyId, limit: companyLimit }) || await limited(req, { scope: `telemetry:agent:${operation}`, identity: `${agent.companyId}:${agent.id}`, limit: agentLimit })) return rateLimited(res);
+        const workspaceLimit = boundedRateLimit(process.env.AGENTGUARD_WORKSPACE_RATE_LIMIT, companyLimit * 10);
+        if (await limited(req, { scope: `telemetry:workspace:${operation}`, identity: agent.workspaceId, limit: workspaceLimit }) || await limited(req, { scope: `telemetry:company:${operation}`, identity: agent.companyId, limit: companyLimit }) || await limited(req, { scope: `telemetry:agent:${operation}`, identity: `${agent.companyId}:${agent.id}`, limit: agentLimit })) return rateLimited(res);
         const input = await body(req);
         const envelope = normalizeEnvelope({ ...input, companyId: agent.companyId, agentId: agent.id, eventType: operation === 'heartbeat' ? 'heartbeat' : input.eventType || input.event });
         const result = applyEnvelope(store, envelope, event); await agentRepository.upsert(result.agent); await governanceRepository.flushAudit(); writeStore(store);
@@ -742,7 +758,10 @@ const server = http.createServer(async (req, res) => {
       if (envelopes.some(item => item.companyId !== companyId || item.agentId !== agentId)) return json(res, 400, { error: 'A gateway batch must contain one company and one agent identity' });
       const companyLimit = Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10);
       const agentLimit = Number(process.env.AGENTGUARD_AGENT_RATE_LIMIT || process.env.AGENTGUARD_RATE_LIMIT || 240);
-      if (await limited(req, { scope: 'telemetry:company:batch', identity: companyId, limit: companyLimit }) || await limited(req, { scope: 'telemetry:agent:batch', identity: `${companyId}:${agentId}`, limit: agentLimit })) return rateLimited(res);
+      const workspaceId = req.headers['x-agentguard-workspace'] || 'default';
+      const workspaceLimit = boundedRateLimit(process.env.AGENTGUARD_WORKSPACE_RATE_LIMIT, companyLimit * 10);
+      const eventWeight = envelopes.length;
+      if (await limited(req, { scope: 'telemetry:workspace:batch', identity: workspaceId, limit: workspaceLimit, weight: eventWeight }) || await limited(req, { scope: 'telemetry:company:batch', identity: companyId, limit: companyLimit, weight: eventWeight }) || await limited(req, { scope: 'telemetry:agent:batch', identity: `${companyId}:${agentId}`, limit: agentLimit, weight: eventWeight })) return rateLimited(res);
       if (usePostgres) {
         try {
           const result = await telemetryRepository.ingest({ companyId, agentId, workspaceId: req.headers['x-agentguard-workspace'] || null }, envelopes,
@@ -942,7 +961,7 @@ const server = http.createServer(async (req, res) => {
       const backupDirectory = path.join(__dirname, 'backups');
       const backups = fs.existsSync(backupDirectory) ? fs.readdirSync(backupDirectory).filter(name => name.endsWith('.json')).map(name => ({ name, modifiedAt: fs.statSync(path.join(backupDirectory, name)).mtime.toISOString() })).sort((a,b)=>b.modifiedAt.localeCompare(a.modifiedAt)) : [];
       const staleAgents = store.agents.filter(item => inWorkspace(item, workspaceId) && item.lastSeenAt && Date.now() - new Date(item.lastSeenAt).getTime() > Number(process.env.AGENTGUARD_HEARTBEAT_TIMEOUT_MS || 60000)).length;
-      return json(res, 200, { workspaceId, storage: usePostgres ? 'postgres' : 'sqlite', audit, execution, staleAgents, latestBackup: backups[0] || null, backupCount: backups.length, rateLimiting: { rejections: rateLimitRejections, mode: usePostgres && process.env.AGENTGUARD_SHARED_RATE_LIMIT !== 'false' ? 'shared-postgres' : 'local-memory', configuredPerMinute: Number(process.env.AGENTGUARD_RATE_LIMIT || 240), agentPerMinute: Number(process.env.AGENTGUARD_AGENT_RATE_LIMIT || process.env.AGENTGUARD_RATE_LIMIT || 240), companyPerMinute: Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10) }, generatedAt: new Date().toISOString() });
+      return json(res, 200, { workspaceId, storage: usePostgres ? 'postgres' : 'sqlite', audit, execution, staleAgents, latestBackup: backups[0] || null, backupCount: backups.length, rateLimiting: { rejections: rateLimitRejections, mode: usePostgres && process.env.AGENTGUARD_SHARED_RATE_LIMIT !== 'false' ? 'shared-postgres' : 'local-memory', configuredPerMinute: Number(process.env.AGENTGUARD_RATE_LIMIT || 240), agentPerMinute: Number(process.env.AGENTGUARD_AGENT_RATE_LIMIT || process.env.AGENTGUARD_RATE_LIMIT || 240), companyPerMinute: Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10), workspacePerMinute: boundedRateLimit(process.env.AGENTGUARD_WORKSPACE_RATE_LIMIT, Number(process.env.AGENTGUARD_COMPANY_RATE_LIMIT || Number(process.env.AGENTGUARD_RATE_LIMIT || 240) * 10) * 10), batchAccounting: 'each telemetry envelope consumes capacity' }, generatedAt: new Date().toISOString() });
     } catch (error) { return json(res, 500, { error: 'Operations health unavailable', detail: error.message }); }
   }
   if (url.pathname === '/api/governance/uncertain-executions' && req.method === 'GET') {
