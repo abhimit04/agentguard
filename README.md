@@ -76,6 +76,12 @@ evade its quota by sending traffic to different application instances, while a
 separate company retains its own quota. It removes the scratch database when
 finished.
 
+`AGENTGUARD_MAX_INFLIGHT_TELEMETRY` additionally bounds concurrent telemetry
+processing across PostgreSQL application instances. Capacity is represented by
+short-lived database leases, so a server crash releases capacity after the
+configured lease duration. When full, AgentGuard responds with `503` and
+`Retry-After: 1`; callers should retry the identical event ID.
+
 ## PostgreSQL migration state
 
 ### Durable governed execution

@@ -48,6 +48,8 @@ const requireAuth = process.env.AGENTGUARD_REQUIRE_AUTH === 'true';
 const rateWindow = new Map();
 let rateLimitRejections = 0;
 let lastRateLimitPruneAt = 0;
+let localTelemetryInflight = 0;
+let telemetryOverloadRejections = 0;
 const managedPollMs = Math.max(5000, Number(process.env.AGENTGUARD_CONNECTOR_POLL_MS || 15000));
 const approvalTtlMs = Math.max(60_000, Number(process.env.AGENTGUARD_APPROVAL_TTL_MS || 15 * 60_000));
 const uncertainExecutionAfterMs = Math.max(60_000, Number(process.env.AGENTGUARD_EXECUTION_UNCERTAIN_AFTER_MS || 5 * 60_000));
@@ -143,6 +145,26 @@ async function limited(req, { scope = null, identity = null, limit = null, weigh
   return rejected;
 }
 function rateLimited(res) { return json(res, 429, { error: 'Rate limit exceeded' }, { 'Retry-After': '60' }); }
+function telemetryOverloaded(res) { telemetryOverloadRejections++; return json(res, 503, { error: 'Telemetry capacity is temporarily full; retry shortly with the same eventId' }, { 'Retry-After': '1' }); }
+async function acquireTelemetrySlot() {
+  const limit = boundedRateLimit(process.env.AGENTGUARD_MAX_INFLIGHT_TELEMETRY, 50);
+  if (!usePostgres) {
+    if (localTelemetryInflight >= limit) return null;
+    localTelemetryInflight++;
+    return async () => { localTelemetryInflight = Math.max(0, localTelemetryInflight - 1); };
+  }
+  const leaseId = randomUUID();
+  const acquired = await require('./storage').postgresTransaction(async client => {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('agentguard-telemetry-inflight-v1'))");
+    await client.query('DELETE FROM ag_telemetry_leases WHERE expires_at <= now()');
+    const active = await client.query('SELECT count(*)::int AS count FROM ag_telemetry_leases');
+    if (active.rows[0].count >= limit) return false;
+    await client.query("INSERT INTO ag_telemetry_leases(id,expires_at) VALUES ($1, now() + make_interval(secs => $2))", [leaseId, Math.max(5, Number(process.env.AGENTGUARD_TELEMETRY_LEASE_SECONDS || 30))]);
+    return true;
+  });
+  if (!acquired) return null;
+  return async () => { await postgresQuery('DELETE FROM ag_telemetry_leases WHERE id=$1', [leaseId]).catch(() => {}); };
+}
 function createAuditEvent(store, kind, message, metadata = {}) {
   const relatedAgent = metadata.agentId ? store.agents.find(item => item.id === metadata.agentId) : null;
   const relatedCompany = metadata.companyId ? store.companies.find(item => item.id === metadata.companyId) : null;
@@ -722,9 +744,13 @@ const server = http.createServer(async (req, res) => {
           let envelope;
           try { envelope = normalizeEnvelope({ ...input, companyId: agent.companyId, agentId, eventType: operation === 'heartbeat' ? 'heartbeat' : input.eventType || input.event }); }
           catch (error) { return json(res, 400, { error: error.message }); }
-          const result = await telemetryRepository.ingest(identity, [envelope], credential);
-          publishTelemetry(result);
-          return json(res, 202, { accepted: result.accepted, duplicate: Boolean(result.duplicates), status: result.agent.runtimeStatus });
+          const release = await acquireTelemetrySlot();
+          if (!release) return telemetryOverloaded(res);
+          try {
+            const result = await telemetryRepository.ingest(identity, [envelope], credential);
+            publishTelemetry(result);
+            return json(res, 202, { accepted: result.accepted, duplicate: Boolean(result.duplicates), status: result.agent.runtimeStatus });
+          } finally { await release(); }
         }
         return json(res, 405, { error: 'Method not allowed' });
       } catch (error) { return telemetryError(res, error); }
@@ -764,10 +790,14 @@ const server = http.createServer(async (req, res) => {
       if (await limited(req, { scope: 'telemetry:workspace:batch', identity: workspaceId, limit: workspaceLimit, weight: eventWeight }) || await limited(req, { scope: 'telemetry:company:batch', identity: companyId, limit: companyLimit, weight: eventWeight }) || await limited(req, { scope: 'telemetry:agent:batch', identity: `${companyId}:${agentId}`, limit: agentLimit, weight: eventWeight })) return rateLimited(res);
       if (usePostgres) {
         try {
-          const result = await telemetryRepository.ingest({ companyId, agentId, workspaceId: req.headers['x-agentguard-workspace'] || null }, envelopes,
-            { token: String(req.headers.authorization || '').replace(/^Bearer\s+/i, ''), company: true, integration: authorizedIntegration(req) });
-          publishTelemetry(result);
-          return json(res, 202, { accepted: result.accepted, duplicates: result.duplicates, agentId, companyId });
+          const release = await acquireTelemetrySlot();
+          if (!release) return telemetryOverloaded(res);
+          try {
+            const result = await telemetryRepository.ingest({ companyId, agentId, workspaceId: req.headers['x-agentguard-workspace'] || null }, envelopes,
+              { token: String(req.headers.authorization || '').replace(/^Bearer\s+/i, ''), company: true, integration: authorizedIntegration(req) });
+            publishTelemetry(result);
+            return json(res, 202, { accepted: result.accepted, duplicates: result.duplicates, agentId, companyId });
+          } finally { await release(); }
         } catch (error) { return telemetryError(res, error); }
       }
       const store = readStore();
@@ -1549,9 +1579,13 @@ const server = http.createServer(async (req, res) => {
           const envelope = normalizeEnvelope({ ...input, eventType, message, companyId: agent.companyId,
             task: input.task || (input.taskId ? { id: input.taskId, name: message } : null),
             metadata: { ...(input.metadata || {}), resource: input.resource || null, durationMs: input.durationMs || null } });
-          const result = await telemetryRepository.ingest({ ...identity, workspaceId: agent.workspaceId, companyId: agent.companyId }, [envelope], credential);
-          publishTelemetry(result);
-          return json(res, 201, { ok: true, duplicate: Boolean(result.duplicates) });
+          const release = await acquireTelemetrySlot();
+          if (!release) return telemetryOverloaded(res);
+          try {
+            const result = await telemetryRepository.ingest({ ...identity, workspaceId: agent.workspaceId, companyId: agent.companyId }, [envelope], credential);
+            publishTelemetry(result);
+            return json(res, 201, { ok: true, duplicate: Boolean(result.duplicates) });
+          } finally { await release(); }
         } catch (error) { return telemetryError(res, error); }
       }
       const store = readStore();
@@ -1722,4 +1756,4 @@ if (require.main === module) {
     server.listen(port, () => console.log(`AgentGuard running at http://localhost:${port}`));
   }).catch(error => { console.error('Storage initialization failed:', error); process.exitCode = 1; });
 }
-module.exports = { server, normalizedRuntimeUrl, probeManagedAgent, runtimeUrlOwner };
+module.exports = { server, normalizedRuntimeUrl, probeManagedAgent, runtimeUrlOwner, acquireTelemetrySlot };

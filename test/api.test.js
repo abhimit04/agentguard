@@ -5,7 +5,7 @@ process.env.AGENTGUARD_RATE_LIMIT = '2';
 process.env.AGENTGUARD_API_KEY = 'test-rate-limit-key';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { server } = require('../server');
+const { server, acquireTelemetrySlot } = require('../server');
 const { readStore, writeStore } = require('../storage');
 const { issueToken } = require('../gateway');
 
@@ -58,6 +58,23 @@ test('gateway batches consume one rate-limit unit per telemetry envelope', async
   } finally {
     writeStore(original);
   }
+});
+
+test('local telemetry admission is bounded and releases capacity', async () => {
+  const original = process.env.AGENTGUARD_MAX_INFLIGHT_TELEMETRY;
+  process.env.AGENTGUARD_MAX_INFLIGHT_TELEMETRY = '1';
+  const first = await acquireTelemetrySlot();
+  try {
+    assert.ok(first);
+    assert.equal(await acquireTelemetrySlot(), null);
+  } finally {
+    await first?.();
+    if (original === undefined) delete process.env.AGENTGUARD_MAX_INFLIGHT_TELEMETRY;
+    else process.env.AGENTGUARD_MAX_INFLIGHT_TELEMETRY = original;
+  }
+  const afterRelease = await acquireTelemetrySlot();
+  assert.ok(afterRelease);
+  await afterRelease();
 });
 
 test('dashboard endpoint returns the core application resources', async () => {

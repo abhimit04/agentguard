@@ -297,6 +297,15 @@ CREATE TABLE IF NOT EXISTS ag_rate_limit_buckets (
 );
 CREATE INDEX IF NOT EXISTS ag_rate_limit_buckets_expiry_idx ON ag_rate_limit_buckets(window_started);
 
+-- A short-lived shared admission lease bounds concurrent telemetry work across
+-- every application instance. Expiry recovers capacity after a process crash.
+CREATE TABLE IF NOT EXISTS ag_telemetry_leases (
+  id uuid PRIMARY KEY,
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ag_telemetry_leases_expiry_idx ON ag_telemetry_leases(expires_at);
+
 -- Daily budget reservations are created inside the governed-action transaction.
 -- The locked agent row serializes reservations for one agent, preventing a
 -- concurrent pair of requests from spending the same remaining allowance.

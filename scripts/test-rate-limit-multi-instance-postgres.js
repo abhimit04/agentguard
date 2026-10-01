@@ -84,6 +84,7 @@ async function main() {
           AGENTGUARD_AGENT_RATE_LIMIT: '3',
           AGENTGUARD_COMPANY_RATE_LIMIT: '10',
           AGENTGUARD_WORKSPACE_RATE_LIMIT: '100',
+          AGENTGUARD_MAX_INFLIGHT_TELEMETRY: '1',
           AGENTGUARD_REQUIRE_AUTH: 'false',
         },
         stdio: ['ignore', 'ignore', 'pipe'],
@@ -100,6 +101,19 @@ async function main() {
       body: JSON.stringify(Array.from({ length: count }, (_, index) => ({ eventId: `${label}-${index}`, companyId, agentId: companyId, eventType: 'running', message: label }))),
     });
 
+    const heldLeaseId = randomUUID();
+    const overload = new Client({ connectionString: scratchUrl });
+    await overload.connect();
+    try {
+      await overload.query("INSERT INTO ag_telemetry_leases(id,expires_at) VALUES ($1, now() + interval '30 seconds')", [heldLeaseId]);
+      const saturated = await send(bases[0], 'company-a', 1, 'saturated');
+      assert.equal(saturated.status, 503, 'a full shared in-flight lease pool must reject telemetry safely');
+      assert.equal(saturated.headers.get('retry-after'), '1');
+    } finally {
+      await overload.query('DELETE FROM ag_telemetry_leases WHERE id=$1', [heldLeaseId]);
+      await overload.end();
+    }
+
     assert.equal((await send(bases[0], 'company-a', 2, 'instance-one')).status, 202);
     const rejected = await send(bases[1], 'company-a', 2, 'instance-two');
     assert.equal(rejected.status, 429, 'the second process must see capacity spent through the first');
@@ -112,7 +126,7 @@ async function main() {
       const receipts = await verify.query("SELECT company_id,count(*)::int AS count FROM ag_telemetry_receipts GROUP BY company_id ORDER BY company_id");
       assert.deepEqual(receipts.rows, [{ company_id: 'company-a', count: 2 }, { company_id: 'company-b', count: 3 }]);
     } finally { await verify.end(); }
-    console.log('PASS: shared agent limits work across two processes and preserve company isolation.');
+    console.log('PASS: shared agent limits and bounded in-flight telemetry work across two processes and preserve company isolation.');
   } finally {
     await Promise.all(children.map(stop));
     if (created) {

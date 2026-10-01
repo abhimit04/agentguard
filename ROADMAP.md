@@ -29,6 +29,8 @@ Progress (2026-10-01, ingestion safety): Gateway and integration request bodies 
 
 Progress (2026-10-01, multi-instance limiter proof): Telemetry limits now apply separately at workspace, company, and agent scopes; a batch is charged for every envelope rather than as a single request. `scripts/test-rate-limit-multi-instance-postgres.js` launches two AgentGuard processes against one scratch database, proves a single agent cannot evade its shared cap by switching instances, and verifies a second company retains its capacity. The GitHub restore workflow runs this check. Broader sustained-overload, queue-depth, and proxy-address tests remain open.
 
+Progress (2026-10-01, bounded telemetry admission): PostgreSQL telemetry ingestion now acquires a short-lived shared database lease before transactional work begins. The lease pool is globally bounded across instances and expires after a crash; full capacity returns a retryable `503` before telemetry is committed. The multi-instance workflow verifies saturation and release. Sustained load profiling and queue-latency objectives remain open.
+
 ## Delivery objective
 
 Prove one complete governed execution: an authenticated agent requests an action, policy evaluation requires approval, execution waits, an authorized reviewer approves, only the bound action receives an execution grant, and its outcome is durably audited. Demonstrate denial, expiry, duplicate delivery, database failure, and recovery after a real process restart.
