@@ -129,3 +129,24 @@ test('policy simulator identifies a matching tool permission rule', async () => 
     writeStore(original);
   }
 });
+
+test('coverage marks old control evidence stale instead of verified', async () => {
+  const original = readStore();
+  const store = structuredClone(original);
+  const agentId = `coverage-agent-${Date.now()}`;
+  const staleAt = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  store.agents.push({ id: agentId, workspaceId: 'default', companyId: 'default', name: 'Coverage agent', team: 'Test', tools: [], status: 'healthy', lastSeenAt: staleAt, connection: { mode: 'gateway', desiredState: 'running' } });
+  store.policies.push({ id: `coverage-policy-${Date.now()}`, workspaceId: 'default', name: 'Coverage policy', scope: 'Test', agentId, actionType: 'research', resourcePattern: '*', effect: 'require_approval', enabled: true, priority: 100, version: 1 });
+  store.events.unshift({ id: `coverage-event-${Date.now()}`, workspaceId: 'default', agentId, eventType: 'policy.allowed', createdAt: staleAt, message: 'Old policy decision' });
+  writeStore(store);
+  try {
+    const response = await fetch(`${baseUrl}/api/agents/${agentId}/coverage`);
+    const result = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(result.coverage.healthMonitoring.status, 'stale');
+    assert.equal(result.coverage.policyEnforcement.status, 'stale');
+    assert.equal(result.coverage.executionTelemetry.status, 'missing');
+  } finally {
+    writeStore(original);
+  }
+});
