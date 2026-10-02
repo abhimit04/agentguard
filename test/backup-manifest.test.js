@@ -103,3 +103,28 @@ test('backup manifest can be signed and verified with an externally retained pub
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('required signed manifests fail closed when signing configuration is missing', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agentguard-required-signature-'));
+  const previous = {
+    required: process.env.AGENTGUARD_REQUIRE_SIGNED_BACKUP_MANIFEST,
+    privateFile: process.env.AGENTGUARD_BACKUP_MANIFEST_SIGNING_PRIVATE_KEY_FILE,
+    keyId: process.env.AGENTGUARD_BACKUP_MANIFEST_SIGNING_KEY_ID
+  };
+  try {
+    const backup = path.join(directory, 'unsigned.sql.gz');
+    fs.writeFileSync(backup, gzipSync(dump()));
+    process.env.AGENTGUARD_REQUIRE_SIGNED_BACKUP_MANIFEST = 'true';
+    delete process.env.AGENTGUARD_BACKUP_MANIFEST_SIGNING_PRIVATE_KEY_FILE;
+    delete process.env.AGENTGUARD_BACKUP_MANIFEST_SIGNING_KEY_ID;
+    await assert.rejects(
+      createManifest(backup),
+      /Signed backup manifest is required but signing key configuration is missing/
+    );
+  } finally {
+    if (previous.required === undefined) delete process.env.AGENTGUARD_REQUIRE_SIGNED_BACKUP_MANIFEST; else process.env.AGENTGUARD_REQUIRE_SIGNED_BACKUP_MANIFEST = previous.required;
+    if (previous.privateFile === undefined) delete process.env.AGENTGUARD_BACKUP_MANIFEST_SIGNING_PRIVATE_KEY_FILE; else process.env.AGENTGUARD_BACKUP_MANIFEST_SIGNING_PRIVATE_KEY_FILE = previous.privateFile;
+    if (previous.keyId === undefined) delete process.env.AGENTGUARD_BACKUP_MANIFEST_SIGNING_KEY_ID; else process.env.AGENTGUARD_BACKUP_MANIFEST_SIGNING_KEY_ID = previous.keyId;
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

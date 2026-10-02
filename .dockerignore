@@ -1,0 +1,13 @@
+.git
+.idea
+.env
+.env.*
+node_modules
+backups
+exports
+data.json
+data.json.*
+agentguard.sqlite*
+*.log
+secrets
+stock_agent.py

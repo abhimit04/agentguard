@@ -44,9 +44,13 @@ services:
       BACKUP_ROOT: /backups
       BACKUP_MANIFEST_STABLE_MS: 90000
       BACKUP_MANIFEST_INTERVAL_MS: 60000
+      AGENTGUARD_BACKUP_MANIFEST_SIGNING_PRIVATE_KEY_FILE: ${AGENTGUARD_BACKUP_MANIFEST_SIGNING_PRIVATE_KEY_FILE:-}
+      AGENTGUARD_BACKUP_MANIFEST_SIGNING_KEY_ID: ${AGENTGUARD_BACKUP_MANIFEST_SIGNING_KEY_ID:-}
+      AGENTGUARD_REQUIRE_SIGNED_BACKUP_MANIFEST: ${AGENTGUARD_REQUIRE_SIGNED_BACKUP_MANIFEST:-false}
     volumes:
       - ./backups:/backups
       - ./scripts:/app/scripts:ro
+      - ./secrets:/app/secrets:ro
   app:
     profiles: ["production"]
     build: .

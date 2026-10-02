@@ -159,10 +159,14 @@ async function governedWriteSmoke(drill, scratchName, sourceUrl) {
 }
 
 async function runRestoreDrill() {
+  const startedAt = Date.now();
   if (!(process.env.AGENTGUARD_STORAGE === 'postgres' || process.env.DATABASE_URL)) throw new Error('PostgreSQL storage is not enabled');
   const backup = selectBackup();
   const sqlManifest = backup.path.endsWith('.sql.gz') ? await createManifest(backup.path) : null;
-  if (sqlManifest) verifyManifestSignature(sqlManifest.document, process.env.AGENTGUARD_BACKUP_MANIFEST_PUBLIC_KEY_FILE);
+  if (sqlManifest) {
+    const signature = verifyManifestSignature(sqlManifest.document, process.env.AGENTGUARD_BACKUP_MANIFEST_PUBLIC_KEY_FILE);
+    if (['1', 'true', 'yes'].includes(String(process.env.AGENTGUARD_REQUIRE_SIGNED_BACKUP_MANIFEST || '').toLowerCase()) && !signature.signed) throw new Error('Signed backup manifest is required for this restore drill');
+  }
   const configuredDatabase = process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL).pathname.slice(1) : (process.env.POSTGRES_DB || 'agentguard');
   const sourceUrl = connectionUrl(decodeURIComponent(configuredDatabase));
   const scratchName = `agentguard_restore_${Date.now()}_${randomBytes(3).toString('hex')}`;
@@ -187,7 +191,7 @@ async function runRestoreDrill() {
     }
     const audit = await verifyAudit(drill);
     const workflow = await governedWriteSmoke(drill, scratchName, sourceUrl);
-    report = { ok: true, backup: backup.name, format: backup.path.endsWith('.json') ? 'agentguard-json' : 'postgres-sql-gzip', ...(sqlManifest ? { manifest: path.relative(root, manifestPath(backup.path)) } : {}), restoredCounts: counts, audit, governedWriteSmoke: workflow };
+    report = { ok: true, backup: backup.name, format: backup.path.endsWith('.json') ? 'agentguard-json' : 'postgres-sql-gzip', durationMs: Date.now() - startedAt, ...(sqlManifest ? { manifest: path.relative(root, manifestPath(backup.path)) } : {}), restoredCounts: counts, audit, governedWriteSmoke: workflow };
   } catch (error) { primaryError = error; }
   finally {
     if (drill) try { await drill.end(); } catch (error) { cleanupError ||= error; }
@@ -196,7 +200,7 @@ async function runRestoreDrill() {
     try { await admin.end(); } catch (error) { cleanupError ||= error; }
   }
   if (primaryError || cleanupError) {
-    console.error(JSON.stringify({ ok: false, error: primaryError?.message || 'restore drill failed', cleanup: cleanupError ? { succeeded: false, error: cleanupError.message } : { succeeded: true } }));
+    console.error(JSON.stringify({ ok: false, error: primaryError?.message || 'restore drill failed', durationMs: Date.now() - startedAt, cleanup: cleanupError ? { succeeded: false, error: cleanupError.message } : { succeeded: true } }));
     process.exitCode = 1;
     return;
   }

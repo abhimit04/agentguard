@@ -1,11 +1,11 @@
 # AgentGuard enterprise delivery roadmap
 
-Updated: 2026-09-30. Consolidates the original five-part reliability and governance roadmap with the additional repository, audit, recovery, deployment, and product requirements.
+Updated: 2026-10-02. Consolidates the original five-part reliability and governance roadmap with the additional repository, audit, recovery, deployment, and product requirements.
 
 ## Current status
 
 - **Implemented with partial targeted PostgreSQL evidence, not release-verified:** telemetry transactional writes; approval-to-execution repository workflow; paged audit verification; workspace-bound keyset browsing; and Ed25519-signed NDJSON audit segments with an offline verifier. The passing targeted tests do not yet establish complete route coverage or production readiness.
-- **Still a release blocker:** complete repository cutover, end-to-end governed execution/failure/restart proof, protected staging recovery, TLS/proxy deployment validation, tenant-aware rate-limit coverage tests, and operational failover/overload evidence.
+- **Still a release blocker:** complete repository cutover, end-to-end governed execution/failure/restart proof, TLS/proxy deployment validation, tenant-aware rate-limit coverage tests, and operational failover/overload evidence.
 - **Still planned product work:** reviewer reminders/escalation beyond expiry, evidence-based enforcement coverage, richer policy simulation, spending controls, immutable external archive storage, and restore-before-prune gates. Initial versioned risk assessments, signed offline checkpoints, workspace legal holds, and retention settings with a read-only candidate preview are implemented; audit pruning remains disabled. Approval requests and expiries create in-app alerts and durable webhook outbox entries in their state/audit transactions. Email/Slack adapters are not included.
 - Tool permissions and tool naming remain unchanged at the user's request.
 
@@ -16,7 +16,7 @@ The independent review is accepted with two factual corrections. AgentGuard alre
 Accepted priorities, in release order:
 
 1. **Retire compatibility paths.** Freeze the current write inventory, reconcile divergent local/legacy data, implement any explicitly approved import, remove runtime/bootstrap dependencies, then delete compatibility code only after a backup and restore drill. Working decommission target: **2026-10-15, before client staging sign-off**. The date is a gate, not authorization to delete unresolved data.
-2. **Prove staging recovery.** The first hosted run of `postgres-restore-drill.yml` succeeded on 2026-10-01 and retained its report as evidence. Exercise a protected production-like backup artifact in staging; local and synthetic CI success are not substitutes.
+2. **Prove staging recovery.** The first hosted run of `postgres-restore-drill.yml` succeeded on 2026-10-01, and a protected production-like staging backup was restored successfully on 2026-10-02. The workflow now runs weekly and remains manually dispatchable. Remaining work is failure alerting and measured RPO/RTO.
 3. **Replace local throttling.** Add workspace-, company-, agent-, credential-, route-, and payload-aware limits using a shared store, bounded request bodies/batches, backpressure, and observable rejection metrics. Test multiple application instances and noisy-neighbour isolation.
 4. **Separate backup trust.** Sign SQL backup manifests with a key unavailable to the backup writer, retain the public trust record outside the backup location, and verify the signature before every restore drill.
 5. **Reduce reassessment fatigue.** Hard governance changes (`companyId`, `parentId`, `riskTier`, `dataClass`, `autonomy`) immediately require review. Operational changes (`tools`, `runtimeUrl`, `agentType`, `framework`, `model`, `version`) are accumulated as reviewed evidence without invalidating approval. Tool changes preserve added and removed names. Thresholds and policy/model dependency rules remain future work.
@@ -28,6 +28,10 @@ Progress (2026-09-30, backup provenance): SQL backup manifests can now carry an 
 Progress (2026-10-01, ingestion safety): Gateway and integration request bodies are bounded by `AGENTGUARD_MAX_BODY_BYTES` and telemetry batches remain capped at 500 envelopes. PostgreSQL deployments now use an atomic, shared fixed-window limiter keyed by route and a hashed caller identity; rejected callers receive `Retry-After: 60`. Local development retains the bounded in-memory fallback. Tenant/company/agent-aware quotas and multi-instance noisy-neighbour tests remain required.
 
 Progress (2026-10-01, multi-instance limiter proof): Telemetry limits now apply separately at workspace, company, and agent scopes; a batch is charged for every envelope rather than as a single request. `scripts/test-rate-limit-multi-instance-postgres.js` launches two AgentGuard processes against one scratch database, proves a single agent cannot evade its shared cap by switching instances, and verifies a second company retains its capacity. The GitHub restore workflow runs this check. Broader sustained-overload, queue-depth, and proxy-address tests remain open.
+
+Progress (2026-10-02, protected staging recovery): The staging Docker stack restored `backups/daily/agentguard-20260930.sql.gz` into an isolated scratch database using the published host mapping (`127.0.0.1:5433`). The manifest matched 47 agents, 17 approvals, 1 assessment, 4 assessment revisions, 1 incident, 3 alerts, 1 legal hold, and 11,413 audit events. The audit chain verified, the approval → claim → completion governed-write smoke passed, and scratch cleanup succeeded. Protected staging recovery is now complete; the remaining recovery work is alerting, measured RPO/RTO, and independent backup-key custody.
+
+Decision (2026-10-02, compatibility cutover): PostgreSQL relational tables are authoritative. The divergent `agentguard_records` mirror is quarantined and archived, with runtime writes disabled. Automatic merge or deletion is deliberately deferred; final removal requires client sign-off, an external archive, and a post-removal restore drill. See `CUTOVER_DECISION.md`.
 
 Progress (2026-10-01, bounded telemetry admission): PostgreSQL telemetry ingestion now acquires a short-lived shared database lease before transactional work begins. The lease pool is globally bounded across instances and expires after a crash; full capacity returns a retryable `503` before telemetry is committed. The multi-instance workflow verifies saturation and release. Sustained load profiling and queue-latency objectives remain open.
 

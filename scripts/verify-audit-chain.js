@@ -1,17 +1,20 @@
-const { initializeStore, postgresQuery, usePostgres } = require('../storage');
-const { auditHash } = require('../audit-integrity');
+const { initializeStore, postgresQuery, usePostgres, closePostgres } = require('../storage');
+const auditRepository = require('../repositories/audit');
+const { verifyAuditPage } = require('../audit-integrity');
 
-async function verifyAuditChain(workspaceId) {
-  const result = await postgresQuery(`SELECT chain_sequence,workspace_id,id,agent_id,kind,event_type,actor,message,previous_hash,event_hash,payload
-    FROM ag_audit_events WHERE workspace_id=$1 ORDER BY chain_sequence ASC`, [workspaceId]);
-  let previousHash = null;
-  for (const row of result.rows) {
-    if (row.previous_hash !== previousHash) return { ok: false, checked: result.rows.indexOf(row), eventId: row.id, reason: 'previous_hash mismatch' };
-    const expected = auditHash(previousHash, row.payload, row.workspace_id);
-    if (row.event_hash !== expected) return { ok: false, checked: result.rows.indexOf(row), eventId: row.id, reason: 'event_hash mismatch' };
-    previousHash = row.event_hash;
+async function verifyAuditChain(workspaceId, pageSize = 1000) {
+  const bounds = await auditRepository.bounds(workspaceId);
+  let state = { workspaceId, previousHash: null, headHash: null, checked: 0, startSequence: null, endSequence: null };
+  while (state.endSequence === null || state.endSequence < bounds.upperSequence) {
+    const rows = await auditRepository.page(workspaceId, state.endSequence || 0, bounds.upperSequence, pageSize);
+    if (!rows.length) break;
+    const checked = verifyAuditPage(state, rows);
+    state = checked.state;
+    if (checked.failure) return { ok: false, ...state, failure: checked.failure, expectedCount: bounds.eventCount, expectedHeadHash: bounds.headHash };
   }
-  return { ok: true, checked: result.rowCount, head: previousHash };
+  if (state.checked !== bounds.eventCount) return { ok: false, ...state, failure: { sequence: state.endSequence, eventId: null, reason: `event count mismatch: checked ${state.checked}, expected ${bounds.eventCount}` }, expectedCount: bounds.eventCount, expectedHeadHash: bounds.headHash };
+  if (state.headHash !== bounds.headHash) return { ok: false, ...state, failure: { sequence: state.endSequence, eventId: null, reason: 'head hash mismatch' }, expectedCount: bounds.eventCount, expectedHeadHash: bounds.headHash };
+  return { ok: true, ...state, expectedCount: bounds.eventCount, expectedHeadHash: bounds.headHash };
 }
 
 if (require.main === module) {
@@ -23,8 +26,8 @@ if (require.main === module) {
     for (const workspace of workspaces.rows) results.push({ workspaceId: workspace.id, ...(await verifyAuditChain(workspace.id)) });
     const failed = results.find(result => !result.ok);
     console.log(JSON.stringify({ ok: !failed, results }));
-    process.exit(failed ? 1 : 0);
-  })().catch(error => { console.error(error.message); process.exit(1); });
+    process.exitCode = failed ? 1 : 0;
+  })().catch(error => { console.error(error.message); process.exitCode = 1; }).finally(() => closePostgres().catch(() => {}));
 }
 
 module.exports = { verifyAuditChain };

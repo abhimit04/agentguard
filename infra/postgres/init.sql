@@ -82,3 +82,24 @@ CREATE TABLE IF NOT EXISTS audit_events (
 CREATE INDEX IF NOT EXISTS audit_events_workspace_created_idx ON audit_events(workspace_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS approvals_workspace_status_idx ON approvals(workspace_id, status);
 CREATE INDEX IF NOT EXISTS agents_workspace_status_idx ON agents(workspace_id, status);
+
+-- Runtime persistence used by the Node application. Each domain record is stored
+-- separately and carries an explicit workspace boundary. The legacy
+-- agentguard_store JSON document is read once by storage.js only for migration.
+CREATE TABLE IF NOT EXISTS agentguard_metadata (
+  id integer PRIMARY KEY CHECK (id = 1),
+  schema_version integer NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS agentguard_records (
+  collection text NOT NULL CHECK (collection IN ('workspaces','memberships','companies','agents','policies','approvals','assessments','events')),
+  workspace_id text NOT NULL,
+  record_id text NOT NULL,
+  payload jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (collection, workspace_id, record_id)
+);
+
+CREATE INDEX IF NOT EXISTS agentguard_records_workspace_collection_idx
+  ON agentguard_records(workspace_id, collection);

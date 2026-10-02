@@ -14,6 +14,7 @@
     "inspect:local-cutover": "node --env-file=.env scripts/inspect-local-cutover.js",
     "migrate:relational": "node --env-file=.env scripts/migrate-relational-postgres.js",
     "manifest:backup": "node scripts/postgres-backup-manifest.js",
+    "check:backup-freshness": "node scripts/check-backup-freshness.js",
     "restore-drill:postgres": "node --env-file=.env scripts/restore-drill-postgres.js",
     "smoke:postgres": "node --env-file=.env scripts/smoke-postgres.js",
     "smoke:proxy": "node --env-file=.env scripts/smoke-production-proxy.js",

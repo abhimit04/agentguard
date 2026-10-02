@@ -57,4 +57,26 @@ export class AgentGuard {
       await new Promise(resolve => setTimeout(resolve, intervalMs));
     }
   }
+
+  async claim(actionType, action, actionRef, resource = '*') {
+    return this.request('/api/guard/executions/claim', { method: 'POST', body: { agentId: this.agent.id, actionType, action, actionRef, resource } });
+  }
+
+  async complete(executionId, { success = true, result = null, error = null } = {}) {
+    return this.request('/api/guard/executions/complete', { method: 'POST', body: { agentId: this.agent.id, executionId, success, result, error } });
+  }
+
+  // Returns a one-time execution grant. The caller must only execute work when
+  // decision is "execute", then report the outcome with complete().
+  async authorize(actionType, action, actionRef, resource = '*', intervalMs = 2500) {
+    const checked = await this.check(actionType, action, actionRef, resource);
+    if (checked.decision === 'block') return checked;
+    if (checked.decision === 'awaiting_approval') {
+      const status = await this.waitForApproval(checked.approvalId, intervalMs);
+      if (status !== 'approved') return { decision: 'block', approvalId: checked.approvalId, reason: `Approval ${status}` };
+    } else if (checked.decision === 'allow') {
+      return checked;
+    }
+    return this.claim(actionType, action, actionRef, resource);
+  }
 }

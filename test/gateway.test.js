@@ -41,4 +41,21 @@ test('heartbeats preserve running state and establish idle state after first con
   assert.equal(require('../gateway').deriveStatus({ eventType: 'heartbeat', status: null }, 'running'), 'running');
   assert.equal(require('../gateway').deriveStatus({ eventType: 'heartbeat', status: null }, 'offline'), 'idle');
 });
+
+test('heartbeats update liveness without creating audit activity', () => {
+  const store = { agents: [{ id: 'agent-1', companyId: 'company-a', status: 'registered', runtimeStatus: 'offline' }], events: [] };
+  const envelope = normalizeEnvelope({ companyId: 'company-a', agentId: 'agent-1', eventType: 'heartbeat', message: 'Agent is online' });
+  applyEnvelope(store, envelope, (target, kind, message, metadata) => target.events.unshift({ kind, message, ...metadata }));
+  assert.equal(store.agents[0].status, 'healthy');
+  assert.equal(store.agents[0].runtimeStatus, 'idle');
+  assert.equal(store.agents[0].usage.events, 0);
+  assert.equal(store.events.length, 0);
+});
+
+test('a failed heartbeat overrides a stale running state', () => {
+  const store = { agents: [{ id: '1001', companyId: 'acme', status: 'healthy', runtimeStatus: 'running' }], events: [] };
+  const envelope = normalizeEnvelope({ companyId: 'acme', agentId: '1001', eventType: 'heartbeat', status: 'failed', error: 'runtime unavailable' });
+  applyEnvelope(store, envelope, () => {});
+  assert.equal(store.agents[0].runtimeStatus, 'failed');
+});
 //test it

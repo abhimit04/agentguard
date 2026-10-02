@@ -28,23 +28,26 @@ function normalizeEnvelope(input) {
     error: input.error ? String(typeof input.error === 'object' ? input.error.message || JSON.stringify(input.error) : input.error).slice(0, 2000) : null,
     traceId: input.traceId ? String(input.traceId).slice(0, 128) : null,
     spanId: input.spanId ? String(input.spanId).slice(0, 128) : null,
+    actionRef: input.actionRef ? String(input.actionRef).slice(0, 256) : null,
+    runId: input.runId ? String(input.runId).slice(0, 256) : null,
     tool: input.tool ? String(input.tool).slice(0, 256) : null,
     metrics: {
       latencyMs: Number.isFinite(Number(metrics.latencyMs)) ? Math.max(0, Number(metrics.latencyMs)) : null,
       inputTokens: Number.isFinite(Number(metrics.inputTokens)) ? Math.max(0, Number(metrics.inputTokens)) : 0,
       outputTokens: Number.isFinite(Number(metrics.outputTokens)) ? Math.max(0, Number(metrics.outputTokens)) : 0,
-      llmCalls: Number.isFinite(Number(metrics.llmCalls)) ? Math.max(0, Number(metrics.llmCalls)) : 0
+      llmCalls: Number.isFinite(Number(metrics.llmCalls)) ? Math.max(0, Number(metrics.llmCalls)) : 0,
+      costUsd: Number.isFinite(Number(metrics.costUsd)) ? Math.max(0, Number(metrics.costUsd)) : null
     },
     metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : null
   };
 }
 
 function deriveStatus(envelope, current = 'waiting') {
-  if (envelope.eventType === 'heartbeat') return current === 'offline' ? 'idle' : current;
+  if (envelope.error || envelope.eventType === 'failed' || envelope.eventType.endsWith('.failed')) return 'failed';
   if (envelope.status) return envelope.status;
-  if (envelope.error || envelope.eventType.endsWith('.failed')) return 'failed';
-  if (envelope.eventType === 'task.started' || envelope.eventType === 'agent.started') return 'running';
-  if (envelope.eventType === 'task.waiting' || envelope.eventType === 'task.completed' || envelope.eventType === 'agent.completed') return 'idle';
+  if (envelope.eventType === 'heartbeat') return current === 'offline' ? 'idle' : current;
+  if (['task.started', 'agent.started', 'started', 'running'].includes(envelope.eventType)) return 'running';
+  if (['task.waiting', 'task.completed', 'agent.completed', 'completed', 'idle', 'waiting'].includes(envelope.eventType)) return 'idle';
   return current;
 }
 
@@ -57,8 +60,8 @@ function applyEnvelope(store, envelope, addEvent) {
   agent.status = 'healthy';
   agent.runtimeStatus = deriveStatus(envelope, agent.runtimeStatus || 'waiting');
   agent.lastSeenAt = now;
-  if (agent.runtimeStatus === 'running') agent.lastActivityAt = now;
-  if (['task.completed', 'task.waiting', 'agent.completed'].includes(envelope.eventType)) {
+  if (agent.runtimeStatus === 'running' && envelope.eventType !== 'heartbeat') agent.lastActivityAt = now;
+  if (['task.completed', 'task.waiting', 'agent.completed', 'completed', 'idle', 'waiting'].includes(envelope.eventType)) {
     agent.runtimeStatus = 'running';
     agent.currentTask = null;
     agent.lastActivityAt = now;
@@ -66,14 +69,17 @@ function applyEnvelope(store, envelope, addEvent) {
   }
   agent.connection = { ...(agent.connection || {}), mode: 'gateway', state: 'connected', desiredState: 'running', lastError: null, lastCheckedAt: now };
   if (envelope.task) agent.currentTask = envelope.eventType === 'task.completed' ? null : envelope.task;
-  agent.usage = agent.usage || { inputTokens: 0, outputTokens: 0, llmCalls: 0, events: 0 };
+  agent.usage = agent.usage || { inputTokens: 0, outputTokens: 0, llmCalls: 0, costUsd: 0, events: 0 };
   agent.usage.inputTokens += envelope.metrics.inputTokens;
   agent.usage.outputTokens += envelope.metrics.outputTokens;
   agent.usage.llmCalls += envelope.metrics.llmCalls;
-  agent.usage.events += 1;
+  agent.usage.costUsd += envelope.metrics.costUsd || 0;
+  if (envelope.eventType !== 'heartbeat') agent.usage.events += 1;
   agent.lastLatencyMs = envelope.metrics.latencyMs;
-  const kind = agent.runtimeStatus === 'failed' ? 'block' : envelope.eventType.includes('approval') ? 'approval' : 'action';
-  addEvent(store, kind, envelope.error ? `${envelope.message}: ${envelope.error}` : envelope.message, { ...envelope, actor: `agent:${agent.id}` });
+  if (envelope.eventType !== 'heartbeat') {
+    const kind = agent.runtimeStatus === 'failed' ? 'block' : envelope.eventType.includes('approval') ? 'approval' : 'action';
+    addEvent(store, kind, envelope.error ? `${envelope.message}: ${envelope.error}` : envelope.message, { ...envelope, actor: `agent:${agent.id}` });
+  }
   return { duplicate: false, agent };
 }
 

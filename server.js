@@ -283,7 +283,7 @@ function requestContext(req) {
 }
 function workspaceForRequest(req) { return requestContext(req).workspaceId; }
 function inWorkspace(item, workspaceId) { return (item.workspaceId || 'default') === workspaceId; }
-function publicAgents(agents) { return agents.map(({ credentialHash, ...agent }) => agent); }
+function publicAgents(agents) { return agents.map(({ credentialHash, gatewayCredential, ...agent }) => agent); }
 function publicCompanies(companies) { return companies.map(({ gatewayCredentialHash, ...company }) => company); }
 function generateAgentId(store) {
   const used = new Set(store.agents.map(agent => String(agent.id)));
@@ -755,7 +755,7 @@ const server = http.createServer(async (req, res) => {
       const credential = issueToken();
       const runtimeUrl = input.runtimeUrl || input.runtime_url || null;
       const now = new Date().toISOString();
-      const agent = { id: agentId, workspaceId, companyId, name, agentType: input.agentType || input.agent_type || 'general', framework: input.framework || 'unknown', model: input.model || null, version: input.version || null, team: input.team || 'Unassigned', tools: Array.isArray(input.tools) ? input.tools : [], parentId: input.parentId || input.parent_id || null, riskTier: input.riskTier || 'unassessed', dataClass: input.dataClass || 'internal', autonomy: input.autonomy || 'assistive', status: 'registered', runtimeStatus: 'offline', createdAt: now, updatedAt: now, lastSeenAt: null, credentialHash: credential.hash, connection: { mode: 'gateway', runtimeUrl: runtimeUrl ? normalizedRuntimeUrl(runtimeUrl) : null, desiredState: 'running', state: 'awaiting_telemetry' } };
+      const agent = { id: agentId, workspaceId, companyId, name, agentType: input.agentType || input.agent_type || 'general', framework: input.framework || 'unknown', model: input.model || null, version: input.version || null, team: input.team || 'Unassigned', tools: Array.isArray(input.tools) ? input.tools : [], parentId: input.parentId || input.parent_id || null, riskTier: input.riskTier || 'unassessed', dataClass: input.dataClass || 'internal', autonomy: input.autonomy || 'assistive', status: 'registered', runtimeStatus: 'offline', createdAt: now, updatedAt: now, lastSeenAt: null, credentialHash: credential.hash, gatewayCredential: credential.token, connection: { mode: 'gateway', runtimeUrl: runtimeUrl ? normalizedRuntimeUrl(runtimeUrl) : null, desiredState: 'running', state: 'awaiting_telemetry' } };
       if (usePostgres) {
         const companyAudit = createAuditEvent(store, 'action', `Company gateway provisioned: ${company.name}`, { workspaceId, companyId, actor: 'gateway:registry' });
         const agentAudit = createAuditEvent(store, 'action', `Agent registered through gateway: ${agent.name}`, { workspaceId, agentId, companyId, actor: 'gateway:registry' });
@@ -1225,7 +1225,7 @@ const server = http.createServer(async (req, res) => {
       if (input.parentId && !store.agents.some(parent => parent.id === input.parentId && parent.companyId === companyId && inWorkspace(parent, workspaceId))) return json(res, 400, { error: 'Parent agent must belong to the same company' });
       const credential = issueToken();
       const now = new Date().toISOString();
-      const agent = { id: generateAgentId(store), workspaceId, companyId, name: input.name, agentType: input.agentType || 'general', framework: input.framework || 'unknown', model: input.model || null, version: input.version || null, team: input.team, tools: input.tools, parentId: input.parentId || null, riskTier: input.riskTier || 'unassessed', dataClass: input.dataClass || 'internal', autonomy: input.autonomy || 'assistive', status: 'registered', runtimeStatus: 'offline', createdAt: now, updatedAt: now, lastSeenAt: null, credentialHash: credential.hash, connection: input.runtimeUrl ? { mode: 'url-binding', runtimeUrl: normalizedRuntimeUrl(input.runtimeUrl), desiredState: 'stopped', state: 'stopped' } : { mode: 'gateway', desiredState: 'running', state: 'awaiting_telemetry' } };
+      const agent = { id: generateAgentId(store), workspaceId, companyId, name: input.name, agentType: input.agentType || 'general', framework: input.framework || 'unknown', model: input.model || null, version: input.version || null, team: input.team, tools: input.tools, parentId: input.parentId || null, riskTier: input.riskTier || 'unassessed', dataClass: input.dataClass || 'internal', autonomy: input.autonomy || 'assistive', status: 'registered', runtimeStatus: 'offline', createdAt: now, updatedAt: now, lastSeenAt: null, credentialHash: credential.hash, gatewayCredential: credential.token, connection: input.runtimeUrl ? { mode: 'url-binding', runtimeUrl: normalizedRuntimeUrl(input.runtimeUrl), desiredState: 'stopped', state: 'stopped' } : { mode: 'gateway', desiredState: 'running', state: 'awaiting_telemetry' } };
       const audit = createAuditEvent(store, 'action', `Agent registered: ${agent.name}`, { workspaceId, agentId: agent.id, actor: 'workspace-user' });
       let committedAudit = audit;
       if (usePostgres) {
@@ -1357,8 +1357,12 @@ const server = http.createServer(async (req, res) => {
       const store = structuredClone(readStore()); const workspaceId = workspaceForRequest(req); const agentId = decodeURIComponent(credentialMatch[1]);
       const agent = usePostgres ? await agentRepository.get(workspaceId, agentId) : store.agents.find(item => item.id === agentId && inWorkspace(item, workspaceId));
       if (!agent) return json(res, 404, { error: 'Agent not found' });
-      const expectedUpdatedAt = agent.updatedAt; const credential = issueToken();
+      const expectedUpdatedAt = agent.updatedAt;
+      // Start/activate is idempotent. The existing secret remains valid across
+      // process restarts; rotation is deliberately a separate operation.
+      const credential = agent.gatewayCredential ? { token: agent.gatewayCredential, hash: agent.credentialHash } : issueToken();
       agent.credentialHash = credential.hash;
+      agent.gatewayCredential = credential.token;
       agent.connection = { ...(agent.connection || {}), mode: 'gateway', desiredState: 'running', state: 'awaiting_telemetry', lastError: null };
       agent.status = 'registered'; agent.runtimeStatus = 'offline'; agent.updatedAt = new Date().toISOString();
       const audit = createAuditEvent(store, 'action', `Gateway credential rotated: ${agent.name}`, { workspaceId, agentId: agent.id, companyId: agent.companyId, eventType: 'agent.credential_rotated', actor: 'workspace-user' });

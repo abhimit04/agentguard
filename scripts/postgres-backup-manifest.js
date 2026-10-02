@@ -65,6 +65,9 @@ async function createManifest(backupPath) {
   const signature = signingKeyFile && signingKeyId && fs.existsSync(path.resolve(signingKeyFile))
     ? { algorithm: 'Ed25519', keyId: signingKeyId, value: sign(null, Buffer.from(JSON.stringify(manifest)), createPrivateKey(fs.readFileSync(path.resolve(signingKeyFile)))).toString('base64url') }
     : null;
+  if (['1', 'true', 'yes'].includes(String(process.env.AGENTGUARD_REQUIRE_SIGNED_BACKUP_MANIFEST || '').toLowerCase()) && !signature) {
+    throw new Error('Signed backup manifest is required but signing key configuration is missing');
+  }
   const document = signature ? { manifest, signature } : manifest;
   if (fs.existsSync(target)) {
     if (existing.manifest ? existing.manifest.format !== 'agentguard-postgres-backup-manifest/v1' : existing.format !== 'agentguard-postgres-backup-manifest/v1') throw new Error(`Existing manifest has an unsupported format for ${path.basename(backupPath)}`);

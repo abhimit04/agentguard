@@ -129,6 +129,25 @@ test('local telemetry admission is bounded and releases capacity', async () => {
   await afterRelease();
 });
 
+test('local telemetry admission sustains repeated load without leaking capacity', async () => {
+  const original = process.env.AGENTGUARD_MAX_INFLIGHT_TELEMETRY;
+  process.env.AGENTGUARD_MAX_INFLIGHT_TELEMETRY = '4';
+  try {
+    for (let round = 0; round < 100; round += 1) {
+      const releases = await Promise.all(Array.from({ length: 4 }, () => acquireTelemetrySlot()));
+      assert.equal(releases.filter(Boolean).length, 4);
+      assert.equal(await acquireTelemetrySlot(), null);
+      await Promise.all(releases.filter(Boolean).map(release => release()));
+    }
+    const recovered = await acquireTelemetrySlot();
+    assert.ok(recovered);
+    await recovered();
+  } finally {
+    if (original === undefined) delete process.env.AGENTGUARD_MAX_INFLIGHT_TELEMETRY;
+    else process.env.AGENTGUARD_MAX_INFLIGHT_TELEMETRY = original;
+  }
+});
+
 test('dashboard endpoint returns the core application resources', async () => {
   const response = await fetch(`${baseUrl}/api/dashboard`);
   const dashboard = await response.json();

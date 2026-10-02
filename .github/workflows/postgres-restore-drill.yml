@@ -4,9 +4,15 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: '17 2 * * 1'
 
 permissions:
   contents: read
+
+concurrency:
+  group: postgres-restore-drill
+  cancel-in-progress: false
 
 jobs:
   restore-drill:
@@ -29,6 +35,10 @@ jobs:
     env:
       DATABASE_URL: postgresql://agentguard:agentguard-ci-only-password@127.0.0.1:5432/agentguard
       AGENTGUARD_STORAGE: postgres
+      AGENTGUARD_REQUIRE_SIGNED_BACKUP_MANIFEST: 'true'
+      AGENTGUARD_BACKUP_MANIFEST_SIGNING_PRIVATE_KEY_FILE: ${{ github.workspace }}/secrets/audit-signing-ci-private.pem
+      AGENTGUARD_BACKUP_MANIFEST_PUBLIC_KEY_FILE: ${{ github.workspace }}/secrets/audit-signing-ci-public.pem
+      AGENTGUARD_BACKUP_MANIFEST_SIGNING_KEY_ID: ci-restore-drill
     steps:
       - name: Check out source
         uses: actions/checkout@v5
@@ -43,16 +53,24 @@ jobs:
         run: npm ci
       - name: Run backup-manifest unit tests
         run: node --test test/backup-manifest.test.js test/deployment-config.test.js
+      - name: Run complete unit test suite
+        run: npm test
       - name: Verify shared telemetry limits across two app instances
         run: node scripts/test-rate-limit-multi-instance-postgres.js
       - name: Seed a synthetic workspace and audit record
         run: node scripts/seed-restore-drill-postgres.js
+      - name: Generate ephemeral backup-manifest signing key
+        run: node scripts/generate-audit-signing-key.js ci
       - name: Create a PostgreSQL SQL backup
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         run: |
           mkdir -p backups/ci
           docker exec "$POSTGRES_CONTAINER" pg_dump --no-owner --no-acl --exclude-table=public.agentguard_records -U agentguard -d agentguard | gzip -c > backups/ci/restore-drill.sql.gz
+      - name: Check backup freshness
+        env:
+          AGENTGUARD_BACKUP_MAX_AGE_HOURS: 1
+        run: node scripts/check-backup-freshness.js
       - name: Create and validate the backup manifest
         run: node scripts/postgres-backup-manifest.js --backup backups/ci/restore-drill.sql.gz
       - name: Restore into a scratch database and verify governance
@@ -69,3 +87,13 @@ jobs:
           path: backups/ci/
           if-no-files-found: warn
           retention-days: 30
+      - name: Summarize restore-drill failure
+        if: failure()
+        run: |
+          {
+            echo '## PostgreSQL restore drill failed'
+            echo
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo 'The restore evidence artifact was retained when available.'
+            echo 'Review the backup manifest, restore report, and failing step before rerunning.'
+          } >> "$GITHUB_STEP_SUMMARY"

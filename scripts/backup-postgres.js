@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { initializeStore, postgresQuery, usePostgres } = require('../storage');
 
-const tables = ['ag_workspaces', 'ag_memberships', 'ag_companies', 'ag_agents', 'ag_policies', 'ag_approvals', 'ag_governed_actions', 'ag_assessments', 'ag_incidents', 'ag_alerts', 'ag_alert_deliveries', 'ag_audit_events', 'agentguard_records'];
+const tables = ['ag_workspaces', 'ag_memberships', 'ag_companies', 'ag_agents', 'ag_policies', 'ag_approvals', 'ag_governed_actions', 'ag_assessments', 'ag_assessment_revisions', 'ag_incidents', 'ag_alerts', 'ag_alert_deliveries', 'ag_audit_events', 'ag_audit_legal_holds', 'ag_telemetry_receipts', 'agentguard_records'];
 
 (async () => {
   if (!usePostgres) throw new Error('PostgreSQL storage is not enabled');
